@@ -45,7 +45,7 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `assess_cluster()` — combines scores: `final_score = 0.4 * rule_score + 0.6 * llm_score`; idempotent upsert
 - `GET /event-clusters/{id}/assessment`, `POST /admin/event-clusters/{id}/assess`
 
-**Phase 4A — Digest assembly foundation** ✅ *(current)*
+**Phase 4A — Digest assembly foundation** ✅
 - `digest_runs` table — one run per (date + section); unique constraint on (digest_date, section_name)
 - `digest_entries` table — one entry per included cluster; materialized display fields copied at assembly time
 - `assemble_digest()` service — fully deterministic, no LLM; selects assessed clusters for a date, filters by `include_in_digest=True` and `primary_section=companies_business`, sorts by `final_score` desc, limits to top 20 by default
@@ -54,7 +54,16 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /digests/`, `GET /digests/{id}` — list and detail with entries in rank order
 - `POST /admin/digests/assemble` — accepts `{digest_date, max_entries?}`
 
-**Not yet implemented:** HTML rendering, Telegram publishing, schedulers, multi-section orchestration, fuzzy/semantic clustering.
+**Phase 4B — HTML rendering foundation** ✅ *(current)*
+- `digest_pages` table — one rendered page per digest run; unique FK on digest_run_id
+- `render_digest_html()` — pure function: no DB, no LLM; builds complete HTML from run + entries
+- `render_digest_page()` — idempotent upsert: repeated renders update existing page (stable page ID)
+- Slug scheme: `{digest_date}-{section_name_with_dashes}` (e.g. `2026-03-24-companies-business`); deterministic, collision-safe
+- `GET /digest-pages/` — list all pages (metadata only, no html_content)
+- `GET /digest-pages/{slug}` — returns rendered HTML with `Content-Type: text/html`
+- `POST /admin/digests/{digest_run_id}/render` — trigger rendering for a run
+
+**Not yet implemented:** Telegram publishing, schedulers, multi-section orchestration, fuzzy/semantic clustering.
 
 ---
 
@@ -113,10 +122,11 @@ uvicorn app.main:app --reload
 5. Cluster:          POST /admin/stories/{id}/cluster-event
 6. Assess:           POST /admin/event-clusters/{id}/assess
 7. Assemble digest:  POST /admin/digests/assemble
-8. Read digest:      GET /digests/{id}
+8. Render HTML:      POST /admin/digests/{id}/render
+9. Read page:        GET /digest-pages/{slug}
 ```
 
-### Triggering digest assembly manually
+### Triggering digest assembly and rendering manually
 
 ```bash
 # Assemble digest for a specific date (companies_business section)
@@ -124,16 +134,14 @@ curl -X POST http://localhost:8000/admin/digests/assemble \
   -H "Content-Type: application/json" \
   -d '{"digest_date": "2026-03-24"}'
 
-# With custom entry limit
-curl -X POST http://localhost:8000/admin/digests/assemble \
-  -H "Content-Type: application/json" \
-  -d '{"digest_date": "2026-03-24", "max_entries": 10}'
+# Render HTML for the assembled run
+curl -X POST http://localhost:8000/admin/digests/{digest_run_id}/render
 
-# List digest runs
-curl http://localhost:8000/digests/
+# Read the rendered HTML page
+curl http://localhost:8000/digest-pages/2026-03-24-companies-business
 
-# Get digest detail
-curl http://localhost:8000/digests/{digest_run_id}
+# List all rendered pages
+curl http://localhost:8000/digest-pages/
 ```
 
 ---
@@ -161,6 +169,9 @@ curl http://localhost:8000/digests/{digest_run_id}
 | POST   | /admin/stories/{id}/cluster-event  | Assign story to an event cluster         |
 | POST   | /admin/event-clusters/{id}/assess  | Trigger editorial assessment for cluster |
 | POST   | /admin/digests/assemble            | Assemble digest for a date               |
+| GET    | /digest-pages/                     | List all rendered digest pages           |
+| GET    | /digest-pages/{slug}               | Get rendered HTML page by slug           |
+| POST   | /admin/digests/{id}/render         | Render HTML page for a digest run        |
 
 Full interactive docs: http://localhost:8000/docs
 
@@ -205,6 +216,9 @@ app/
     service.py            assess_cluster() — combines scores, idempotent upsert
   digest/
     service.py            assemble_digest() — candidate selection, materialization, idempotent
+  rendering/
+    html.py               render_digest_html() — pure function, no DB, no LLM
+    service.py            render_digest_page() — DB upsert of DigestPage
 alembic/
   versions/
     0001_initial_sources.py
@@ -215,6 +229,7 @@ alembic/
     0006_add_event_clusters.py
     0007_add_event_cluster_assessments.py
     0008_add_digest_runs_entries.py
+    0009_add_digest_pages.py
 tests/
   conftest.py             session DB setup, per-test truncation, TestClient
   test_health.py
@@ -225,6 +240,7 @@ tests/
   test_clustering.py
   test_scoring.py
   test_digest.py
+  test_rendering.py
 ```
 
 ---

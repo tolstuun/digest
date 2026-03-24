@@ -14,10 +14,12 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │  GET /event-clusters/  GET /event-clusters/{id}                  │
 │  GET /event-clusters/{id}/assessment                             │
 │  GET /digests/         GET /digests/{id}                         │
+│  GET /digest-pages/    GET /digest-pages/{slug}                  │
 │  POST /admin/sources/{id}/ingest|normalize                       │
 │  POST /admin/stories/{id}/extract-facts|cluster-event            │
 │  POST /admin/event-clusters/{id}/assess                          │
 │  POST /admin/digests/assemble                                    │
+│  POST /admin/digests/{id}/render                                 │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
@@ -26,6 +28,7 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │                                                                  │
 │  sources    raw_items    stories    story_facts    event_clusters │
 │  event_cluster_assessments  digest_runs  digest_entries          │
+│  digest_pages                                                    │
 │  (planned) entities  sections  job_runs                          │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -39,8 +42,8 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
           → cluster-event ✅ → event_clusters (stories.event_cluster_id)
           → assess ✅ → event_cluster_assessments (rule_score + llm_score → final_score)
           → assemble digest ✅ → digest_runs + digest_entries
-          → render HTML (Phase 4B)
-          → publish Telegram (Phase 4B)
+          → render HTML ✅ → digest_pages (slug, html_content)
+          → publish Telegram (Phase 4C)
 ```
 
 ## Implemented components
@@ -123,6 +126,18 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | `app/schemas/digest.py`        | `DigestRunOut`, `DigestEntryOut`, `DigestRunDetail` Pydantic schemas     |
 | `app/routers/digests.py`       | `GET /digests/`, `GET /digests/{id}`                                     |
 | `app/routers/admin.py`         | `POST /admin/digests/assemble` (extended)                                |
+
+### Phase 4B — HTML Rendering
+
+| Component                        | Description                                                              |
+|----------------------------------|--------------------------------------------------------------------------|
+| `app/models/digest_page.py`      | `DigestPage` ORM model: one page per digest run                          |
+| `app/rendering/html.py`          | `render_digest_html()` — pure function; no DB, no LLM; HTML-escaping     |
+| `app/rendering/html.py`          | `make_slug()`, `make_title()` — deterministic helpers                    |
+| `app/rendering/service.py`       | `render_digest_page()` — idempotent upsert; stable page ID on re-render  |
+| `app/schemas/digest_page.py`     | `DigestPageOut` Pydantic schema (metadata; no html_content)              |
+| `app/routers/digest_pages.py`    | `GET /digest-pages/`, `GET /digest-pages/{slug}` (returns HTMLResponse)  |
+| `app/routers/admin.py`           | `POST /admin/digests/{id}/render` (extended)                             |
 
 ## Database schema (current)
 
@@ -266,6 +281,19 @@ Unique constraint: `(digest_date, section_name)` — one run per date+section.
 | why_it_matters_ru     | text          | materialized from event_cluster_assessment                     |
 | created_at            | timestamptz   |                                                                |
 | updated_at            | timestamptz   |                                                                |
+
+### `digest_pages`
+
+| Column         | Type          | Notes                                                                  |
+|----------------|---------------|------------------------------------------------------------------------|
+| id             | UUID PK       |                                                                        |
+| digest_run_id  | UUID FK       | → digest_runs.id CASCADE; **unique** (1/run)                           |
+| slug           | varchar(256)  | unique; `{digest_date}-{section_name_with_dashes}`                     |
+| title          | varchar(512)  | human-readable page title                                              |
+| html_content   | text          | complete rendered HTML                                                 |
+| rendered_at    | timestamptz   | when rendering ran                                                     |
+| created_at     | timestamptz   |                                                                        |
+| updated_at     | timestamptz   |                                                                        |
 
 ## Normalization flow (Phase 2A)
 
@@ -426,3 +454,34 @@ Return {digest_run_id, digest_date, section_name, total_candidates, total_includ
 **Decision:** Repeated calls to `assemble_digest()` for the same (digest_date, section_name) delete the existing DigestRun (cascade-deleting all DigestEntry rows) and build a fresh run from current upstream state.
 
 **Reason:** The alternative (in-place update of entries) requires diffing and merging entry lists, which adds complexity and can leave orphaned entries. Delete-and-rebuild is simpler, always produces a consistent state, and is safe to retry after failures. The trade-off is that the run ID changes on each rebuild — callers holding a run ID should re-query if they need the current run for a given date.
+
+## ADR-010: Upsert as rendering idempotency policy
+
+**Decision:** Repeated calls to `render_digest_page()` for the same DigestRun update the existing DigestPage row in place (`slug`, `title`, `html_content`, `rendered_at`). The page ID remains stable across re-renders.
+
+**Reason:** Unlike digest assembly (where delete-and-rebuild is correct because entry lists can grow or shrink), rendering is a pure transformation: same run data always produces the same output. Upsert avoids breaking any caller that holds a page ID or slug. The slug is based on the run's (date, section) so it cannot collide with other runs.
+
+## HTML rendering flow (Phase 4B)
+
+```
+POST /admin/digests/{digest_run_id}/render
+         │
+         ▼
+render_digest_page(db, run):
+  1. Load DigestEntry rows for run, ordered by rank
+  2. html = render_digest_html(run, entries)   ← pure function
+       - make_title(run): "Security Digest — {date} — {Section Name}"
+       - make_slug(run): "{date}-{section-name-with-dashes}"
+       - for each entry: render rank, title, score, summaries (EN+RU),
+                          why-it-matters (EN+RU); HTML-escape all content
+  3. Check for existing DigestPage with digest_run_id == run.id
+  4. If none: INSERT DigestPage(slug, title, html_content, rendered_at)
+     If exists: UPDATE slug, title, html_content, rendered_at (stable id)
+  5. COMMIT
+         │
+         ▼
+Return {digest_page_id, digest_run_id, slug, rendered_at, created}
+
+Public read:
+  GET /digest-pages/{slug} → HTMLResponse(html_content, content_type="text/html")
+```
