@@ -1,0 +1,44 @@
+name: CD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Add server to known_hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy smoke app
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} <<'SSH'
+          mkdir -p /opt/security-digest
+          cat > /opt/security-digest/compose.yaml <<'YAML'
+          services:
+            web:
+              image: nginx:alpine
+              container_name: security-digest
+              restart: unless-stopped
+              ports:
+                - "8080:80"
+          YAML
+          docker compose -f /opt/security-digest/compose.yaml up -d
+          docker ps
+          SSH
+
+      - name: Smoke test
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "sleep 3 && curl -fsS http://127.0.0.1:8080 >/dev/null && echo ok"
