@@ -6,7 +6,7 @@ from sqlalchemy import engine_from_config, pool
 
 # Import Base and all models so Alembic detects them.
 from app.database import Base
-from app.models import raw_item, source  # noqa: F401
+from app.models import raw_item, source, story  # noqa: F401
 
 config = context.config
 
