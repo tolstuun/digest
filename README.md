@@ -38,14 +38,23 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `cluster_story()` service — idempotent; creates or joins cluster; first story becomes representative
 - `GET /event-clusters/`, `GET /event-clusters/{id}`, `POST /admin/stories/{id}/cluster-event`
 
-**Phase 3B — Editorial scoring** ✅ *(current)*
+**Phase 3B — Editorial scoring** ✅
 - `event_cluster_assessments` table — one row per cluster (upserted on reassessment)
 - `compute_rule_score()` — deterministic pre-score; weights visible in code (event_type, coverage, amount, source priority)
 - `assess_cluster_llm()` — Anthropic tool-use boundary: returns `primary_section`, `llm_score`, `include_in_digest`, bilingual editorial notes
 - `assess_cluster()` — combines scores: `final_score = 0.4 * rule_score + 0.6 * llm_score`; idempotent upsert
 - `GET /event-clusters/{id}/assessment`, `POST /admin/event-clusters/{id}/assess`
 
-**Not yet implemented:** digest assembly, rendering, publishing, schedulers, fuzzy/semantic clustering.
+**Phase 4A — Digest assembly foundation** ✅ *(current)*
+- `digest_runs` table — one run per (date + section); unique constraint on (digest_date, section_name)
+- `digest_entries` table — one entry per included cluster; materialized display fields copied at assembly time
+- `assemble_digest()` service — fully deterministic, no LLM; selects assessed clusters for a date, filters by `include_in_digest=True` and `primary_section=companies_business`, sorts by `final_score` desc, limits to top 20 by default
+- Date assignment rule: use representative story `published_at` if available; fall back to `event_cluster.created_at`
+- Idempotent policy: delete-and-rebuild — repeated assembly for the same date+section deletes the old run and creates a fresh one
+- `GET /digests/`, `GET /digests/{id}` — list and detail with entries in rank order
+- `POST /admin/digests/assemble` — accepts `{digest_date, max_entries?}`
+
+**Not yet implemented:** HTML rendering, Telegram publishing, schedulers, multi-section orchestration, fuzzy/semantic clustering.
 
 ---
 
@@ -97,20 +106,34 @@ uvicorn app.main:app --reload
 ## Pipeline walkthrough (current)
 
 ```
-1. Create a source via POST /sources/
-2. Ingest it:   POST /admin/sources/{id}/ingest
-3. Normalize:   POST /admin/sources/{id}/normalize
-4. Read stories: GET /stories/
+1. Create a source:  POST /sources/
+2. Ingest:           POST /admin/sources/{id}/ingest
+3. Normalize:        POST /admin/sources/{id}/normalize
+4. Extract facts:    POST /admin/stories/{id}/extract-facts
+5. Cluster:          POST /admin/stories/{id}/cluster-event
+6. Assess:           POST /admin/event-clusters/{id}/assess
+7. Assemble digest:  POST /admin/digests/assemble
+8. Read digest:      GET /digests/{id}
 ```
 
-### Triggering normalization manually
+### Triggering digest assembly manually
 
 ```bash
-# Normalize all raw items for a source
-curl -X POST http://localhost:8000/admin/sources/{source_id}/normalize
+# Assemble digest for a specific date (companies_business section)
+curl -X POST http://localhost:8000/admin/digests/assemble \
+  -H "Content-Type: application/json" \
+  -d '{"digest_date": "2026-03-24"}'
 
-# Check stories
-curl http://localhost:8000/stories/
+# With custom entry limit
+curl -X POST http://localhost:8000/admin/digests/assemble \
+  -H "Content-Type: application/json" \
+  -d '{"digest_date": "2026-03-24", "max_entries": 10}'
+
+# List digest runs
+curl http://localhost:8000/digests/
+
+# Get digest detail
+curl http://localhost:8000/digests/{digest_run_id}
 ```
 
 ---
@@ -129,10 +152,15 @@ curl http://localhost:8000/stories/
 | GET    | /stories/{id}/facts                | Get extracted facts for a story          |
 | GET    | /event-clusters/                   | List all event clusters                  |
 | GET    | /event-clusters/{id}               | Get event cluster detail + story ids     |
+| GET    | /event-clusters/{id}/assessment    | Get editorial assessment for a cluster   |
+| GET    | /digests/                          | List all digest runs                     |
+| GET    | /digests/{id}                      | Get digest run detail with entries       |
 | POST   | /admin/sources/{id}/ingest         | Trigger RSS ingestion for one source     |
 | POST   | /admin/sources/{id}/normalize      | Normalize all raw items for one source   |
 | POST   | /admin/stories/{id}/extract-facts  | Trigger LLM fact extraction for a story  |
 | POST   | /admin/stories/{id}/cluster-event  | Assign story to an event cluster         |
+| POST   | /admin/event-clusters/{id}/assess  | Trigger editorial assessment for cluster |
+| POST   | /admin/digests/assemble            | Assemble digest for a date               |
 
 Full interactive docs: http://localhost:8000/docs
 
@@ -170,6 +198,13 @@ app/
   clustering/
     rules.py              build_cluster_key() — pure deterministic function, no DB, no LLM
     service.py            cluster_story() — idempotent assign/create cluster
+  scoring/
+    schemas.py            ClusterInput dataclass, ClusterAssessment Pydantic model
+    rules.py              compute_rule_score() — deterministic pre-score
+    llm.py                assess_cluster_llm() — single Anthropic tool-use boundary
+    service.py            assess_cluster() — combines scores, idempotent upsert
+  digest/
+    service.py            assemble_digest() — candidate selection, materialization, idempotent
 alembic/
   versions/
     0001_initial_sources.py
@@ -178,12 +213,18 @@ alembic/
     0004_add_stories.py
     0005_add_story_facts.py
     0006_add_event_clusters.py
+    0007_add_event_cluster_assessments.py
+    0008_add_digest_runs_entries.py
 tests/
   conftest.py             session DB setup, per-test truncation, TestClient
   test_health.py
   test_sources.py
   test_ingestion.py
   test_normalization.py
+  test_extraction.py
+  test_clustering.py
+  test_scoring.py
+  test_digest.py
 ```
 
 ---

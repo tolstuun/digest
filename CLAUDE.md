@@ -27,10 +27,10 @@ The system publishes a daily web page and sends a Telegram message with a link t
 
 ## Current repository state
 
-Phase 3B (editorial scoring) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
+Phase 4A (digest assembly foundation) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
 
-Current tables: `sources`, `raw_items`, `stories`, `story_facts`, `event_clusters`, `event_cluster_assessments`.
-Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `GET /stories/{id}/facts`, `GET /event-clusters/`, `GET /event-clusters/{id}`, `GET /event-clusters/{id}/assessment`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`, `POST /admin/stories/{id}/extract-facts`, `POST /admin/stories/{id}/cluster-event`, `POST /admin/event-clusters/{id}/assess`.
+Current tables: `sources`, `raw_items`, `stories`, `story_facts`, `event_clusters`, `event_cluster_assessments`, `digest_runs`, `digest_entries`.
+Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `GET /stories/{id}/facts`, `GET /event-clusters/`, `GET /event-clusters/{id}`, `GET /event-clusters/{id}/assessment`, `GET /digests/`, `GET /digests/{id}`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`, `POST /admin/stories/{id}/extract-facts`, `POST /admin/stories/{id}/cluster-event`, `POST /admin/event-clusters/{id}/assess`, `POST /admin/digests/assemble`.
 
 Two LLM boundaries (both mockable):
 - `app.extraction.llm.extract_facts_llm(story_input)` — fact extraction

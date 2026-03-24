@@ -13,9 +13,11 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │  GET /stories/         GET /stories/{id}   GET /stories/{id}/facts│
 │  GET /event-clusters/  GET /event-clusters/{id}                  │
 │  GET /event-clusters/{id}/assessment                             │
+│  GET /digests/         GET /digests/{id}                         │
 │  POST /admin/sources/{id}/ingest|normalize                       │
 │  POST /admin/stories/{id}/extract-facts|cluster-event            │
 │  POST /admin/event-clusters/{id}/assess                          │
+│  POST /admin/digests/assemble                                    │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
@@ -23,9 +25,8 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │                         PostgreSQL                               │
 │                                                                  │
 │  sources    raw_items    stories    story_facts    event_clusters │
-│  event_cluster_assessments                                       │
-│  (planned) entities  sections  digest_runs  digest_entries       │
-│  (planned) digest_runs  digest_entries  job_runs                 │
+│  event_cluster_assessments  digest_runs  digest_entries          │
+│  (planned) entities  sections  job_runs                          │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -37,10 +38,9 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
           → extract-facts ✅ → story_facts
           → cluster-event ✅ → event_clusters (stories.event_cluster_id)
           → assess ✅ → event_cluster_assessments (rule_score + llm_score → final_score)
-          → assign to sections (Phase 4)
-          → assemble digest_run (Phase 4)
-          → render HTML (Phase 4)
-          → publish Telegram (Phase 4)
+          → assemble digest ✅ → digest_runs + digest_entries
+          → render HTML (Phase 4B)
+          → publish Telegram (Phase 4B)
 ```
 
 ## Implemented components
@@ -112,6 +112,17 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | `app/schemas/event_cluster_assessment.py`  | `EventClusterAssessmentOut` Pydantic schema                           |
 | `app/routers/event_clusters.py`            | `GET /event-clusters/{id}/assessment` (extended)                      |
 | `app/routers/admin.py`                     | `POST /admin/event-clusters/{id}/assess` (extended)                   |
+
+### Phase 4A — Digest Assembly
+
+| Component                      | Description                                                              |
+|--------------------------------|--------------------------------------------------------------------------|
+| `app/models/digest_run.py`     | `DigestRun` ORM model: one run per (digest_date, section_name)           |
+| `app/models/digest_entry.py`   | `DigestEntry` ORM model: one entry per included cluster; fields materialized at assembly |
+| `app/digest/service.py`        | `assemble_digest()` — deterministic, no LLM; candidate selection + materialization |
+| `app/schemas/digest.py`        | `DigestRunOut`, `DigestEntryOut`, `DigestRunDetail` Pydantic schemas     |
+| `app/routers/digests.py`       | `GET /digests/`, `GET /digests/{id}`                                     |
+| `app/routers/admin.py`         | `POST /admin/digests/assemble` (extended)                                |
 
 ## Database schema (current)
 
@@ -223,6 +234,39 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | created_at           | timestamptz   |                                                    |
 | updated_at           | timestamptz   |                                                    |
 
+### `digest_runs`
+
+| Column                    | Type         | Notes                                                    |
+|---------------------------|--------------|----------------------------------------------------------|
+| id                        | UUID PK      |                                                          |
+| digest_date               | date         | not null; index                                          |
+| section_name              | varchar(64)  | `companies_business` in Phase 4A                         |
+| status                    | varchar(32)  | `assembled` (entries exist) or `empty` (no candidates)   |
+| total_candidate_clusters  | integer      | all clusters matching date+section before include filter |
+| total_included_clusters   | integer      | clusters actually included after filtering + limit       |
+| generated_at              | timestamptz  | when assembly ran                                        |
+| created_at                | timestamptz  |                                                          |
+| updated_at                | timestamptz  |                                                          |
+
+Unique constraint: `(digest_date, section_name)` — one run per date+section.
+
+### `digest_entries`
+
+| Column                | Type          | Notes                                                          |
+|-----------------------|---------------|----------------------------------------------------------------|
+| id                    | UUID PK       |                                                                |
+| digest_run_id         | UUID FK       | → digest_runs.id CASCADE                                       |
+| event_cluster_id      | UUID FK       | → event_clusters.id SET NULL; nullable (preserves history)     |
+| rank                  | integer       | position within run (1 = highest score)                        |
+| final_score           | float         | copied from assessment at assembly time                        |
+| title                 | varchar(1024) | materialized from representative story                         |
+| canonical_summary_en  | text          | materialized from story_facts                                  |
+| canonical_summary_ru  | text          | materialized from story_facts                                  |
+| why_it_matters_en     | text          | materialized from event_cluster_assessment                     |
+| why_it_matters_ru     | text          | materialized from event_cluster_assessment                     |
+| created_at            | timestamptz   |                                                                |
+| updated_at            | timestamptz   |                                                                |
+
 ## Normalization flow (Phase 2A)
 
 ```
@@ -265,6 +309,8 @@ Return {source_id, total, new, skipped}
 **Deterministic clustering before fuzzy matching** — Phase 3A uses only exact key matching (lowercased, sorted company names + event type + amount + currency). Fuzzy/semantic matching is explicitly deferred.
 
 **Two-stage scoring: rule pre-score + LLM editorial judgment** — Phase 3B computes a deterministic rule score first (event type, coverage, financial details, source priority), then calls the LLM for editorial assessment. The final score weights the LLM score higher (0.6) because it captures contextual editorial relevance that rules cannot. The weights are explicit in code, not hidden in prompts.
+
+**Digest entries materialize display data at assembly time** — DigestEntry copies title, summaries, and editorial notes from source tables at assembly time. This preserves digest history even if upstream data changes or clusters are deleted. Trade-off: entries may become stale; reassembling for the same date rebuilds from current upstream state.
 
 ## Technology choices
 
@@ -348,3 +394,35 @@ assess_cluster(db, cluster):
 Return {cluster_id, primary_section, rule_score, llm_score, final_score,
         include_in_digest, created}
 ```
+
+## Digest assembly flow (Phase 4A)
+
+```
+POST /admin/digests/assemble  {digest_date, max_entries?}
+         │
+         ▼
+assemble_digest(db, digest_date, section_name, max_entries):
+  1. Delete existing DigestRun for (digest_date, section_name) if any
+     (cascade-deletes all DigestEntry rows — idempotent delete-and-rebuild)
+  2. Load all EventClusterAssessments where primary_section = section_name
+  3. For each assessment, load EventCluster + representative Story + StoryFacts
+  4. Filter by effective_date:
+       if rep_story.published_at is not None → use rep_story.published_at.date()
+       else → use event_cluster.created_at.date()
+     Keep only clusters where effective_date == digest_date
+  5. total_candidate_clusters = len(above) [regardless of include_in_digest]
+  6. Filter to include_in_digest=True
+  7. Sort by final_score descending
+  8. Slice to max_entries (default 20)
+  9. Create DigestRun (status="assembled" if entries exist, "empty" otherwise)
+  10. Create DigestEntry for each: copy title, summaries, why_it_matters from source
+         │
+         ▼
+Return {digest_run_id, digest_date, section_name, total_candidates, total_included, created}
+```
+
+## ADR-009: Delete-and-rebuild as digest assembly idempotency policy
+
+**Decision:** Repeated calls to `assemble_digest()` for the same (digest_date, section_name) delete the existing DigestRun (cascade-deleting all DigestEntry rows) and build a fresh run from current upstream state.
+
+**Reason:** The alternative (in-place update of entries) requires diffing and merging entry lists, which adds complexity and can leave orphaned entries. Delete-and-rebuild is simpler, always produces a consistent state, and is safe to retry after failures. The trade-off is that the run ID changes on each rebuild — callers holding a run ID should re-query if they need the current run for a given date.
