@@ -16,12 +16,14 @@ from app.database import get_db
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
+from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.raw_item import RawItem
 from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
+from app.rendering.service import render_digest_page
 from app.schemas.story_facts import StoryFactsOut
 from app.scoring.service import assess_cluster
 
@@ -191,5 +193,32 @@ def trigger_assemble_digest(
         "section_name": run.section_name,
         "total_candidates": run.total_candidate_clusters,
         "total_included": run.total_included_clusters,
+        "created": created,
+    }
+
+
+@router.post("/digests/{digest_run_id}/render")
+def trigger_render_digest(
+    digest_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> dict:
+    """
+    Manually trigger HTML rendering for one digest run.
+    Idempotent: repeated calls update the existing page (stable page ID).
+    Returns: {digest_page_id, digest_run_id, slug, rendered_at, created}.
+    """
+    run = db.get(DigestRun, digest_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Digest run not found")
+
+    page, created = render_digest_page(db, run)
+    logger.info(
+        "render-digest run=%s slug=%s created=%s",
+        digest_run_id, page.slug, created,
+    )
+    return {
+        "digest_page_id": str(page.id),
+        "digest_run_id": str(digest_run_id),
+        "slug": page.slug,
+        "rendered_at": page.rendered_at.isoformat() if page.rendered_at else None,
         "created": created,
     }

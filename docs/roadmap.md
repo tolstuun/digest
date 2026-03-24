@@ -84,12 +84,29 @@ Goal: assemble the first real digest object from assessed clusters; no rendering
 
 **Intentionally not in this phase:** HTML rendering, Telegram publishing, schedulers, multi-section orchestration.
 
-## Phase 4B — Digest rendering and publishing (planned)
+## Phase 4B — HTML rendering foundation ✅ *(current)*
 
-Goal: render and publish the assembled digest.
+Goal: render the assembled digest as a readable HTML page; no publishing yet.
 
-- HTML page renderer (daily digest web page)
-- Telegram publisher (sends link to the page)
+- `digest_pages` table: one page per digest run; unique FK on digest_run_id
+- `render_digest_html()`: pure function — no DB, no LLM; builds complete HTML from DigestRun + DigestEntry list
+- `render_digest_page()`: idempotent upsert — repeated renders update existing page (stable page ID)
+- Slug scheme: `{digest_date}-{section_name_with_dashes}` — deterministic, collision-safe
+- Content: digest title, date, section, ordered entries with rank, title, final_score, summaries (EN+RU), why-it-matters (EN+RU)
+- HTML escaping of all user-supplied content
+- `GET /digest-pages/` — list all pages (metadata, no html_content)
+- `GET /digest-pages/{slug}` — returns rendered HTML with correct Content-Type
+- `POST /admin/digests/{digest_run_id}/render` — manual render trigger
+- Migration 0009
+
+**Intentionally not in this phase:** Telegram publishing, schedulers, CSS framework, JS, multi-section rendering.
+
+## Phase 4C — Telegram publishing (planned)
+
+Goal: send a Telegram message linking to the rendered digest page.
+
+- Telegram Bot API integration
+- `POST /admin/digests/{id}/publish` — trigger publishing
 - `digest_runs.status` transitions: assembled → rendered → published
 
 ## Future sections
