@@ -4,7 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://digest:digest@db:5432/digest
+      APP_CONFIG_PATH: /app/config/settings.compose.yaml
     depends_on:
       db:
         condition: service_healthy
