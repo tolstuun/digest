@@ -84,7 +84,7 @@ Goal: assemble the first real digest object from assessed clusters; no rendering
 
 **Intentionally not in this phase:** HTML rendering, Telegram publishing, schedulers, multi-section orchestration.
 
-## Phase 4B — HTML rendering foundation ✅ *(current)*
+## Phase 4B — HTML rendering foundation ✅
 
 Goal: render the assembled digest as a readable HTML page; no publishing yet.
 
@@ -101,12 +101,33 @@ Goal: render the assembled digest as a readable HTML page; no publishing yet.
 
 **Intentionally not in this phase:** Telegram publishing, schedulers, CSS framework, JS, multi-section rendering.
 
-## Phase 4C — Telegram publishing (planned)
+## Phase 4C — Ops/admin UI + YAML config ✅ *(current)*
+
+Goal: add a simple internal operational web UI and switch runtime config to YAML.
+
+- YAML config loader (`app/config.py`): structured sections — app, database, llm, telegram
+- Config priority: env vars > YAML file > built-in defaults (env vars always win)
+- Default path: `config/settings.yaml`; override via `APP_CONFIG_PATH` env var
+- `config/settings.example.yaml` — committed template; real file is git-ignored
+- Internal ops/admin UI under `/ui/` — Jinja2 templates, no JS, no SPA
+  - `/ui/` — dashboard: counts (sources, raw_items, stories, clusters, digest runs/pages) + recent source errors
+  - `/ui/sources` — sources table with Ingest + Normalize action buttons
+  - `/ui/event-clusters` — clusters table with assessment status, score, include flag + Assess button
+  - `/ui/digests` — digest runs table with status, entry counts + Assemble + Render buttons + page link
+  - `/ui/config` — read-only config view with secrets masked (api_key, bot_token)
+- All action buttons call existing services directly (no duplicated business logic)
+- Flash messages for action feedback (POST → redirect → GET with flash in query params)
+- New dependencies: `pyyaml`, `jinja2`, `python-multipart`
+
+**Intentionally not in this phase:** Telegram publishing, config editing via UI, auth/roles, schedulers, WebSockets.
+
+## Phase 4D — Telegram publishing (planned)
 
 Goal: send a Telegram message linking to the rendered digest page.
 
 - Telegram Bot API integration
 - `POST /admin/digests/{id}/publish` — trigger publishing
+- Link in Telegram message: `{app.public_base_url}/digest-pages/{slug}`
 - `digest_runs.status` transitions: assembled → rendered → published
 
 ## Future sections

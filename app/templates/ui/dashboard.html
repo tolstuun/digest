@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Digest Ops{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="num">{{ counts.sources }}</div>
+    <div class="label">Sources</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ counts.raw_items }}</div>
+    <div class="label">Raw Items</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ counts.stories }}</div>
+    <div class="label">Stories</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ counts.event_clusters }}</div>
+    <div class="label">Event Clusters</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ counts.digest_runs }}</div>
+    <div class="label">Digest Runs</div>
+  </div>
+  <div class="stat-card">
+    <div class="num">{{ counts.digest_pages }}</div>
+    <div class="label">Digest Pages</div>
+  </div>
+</div>
+
+{% if recent_errors %}
+<h2>Sources with recent errors</h2>
+<table>
+  <thead>
+    <tr>
+      <th>Source</th>
+      <th>Last Error</th>
+      <th>Last Polled</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for src in recent_errors %}
+    <tr>
+      <td><a href="/ui/sources">{{ src.name }}</a></td>
+      <td class="error-cell" title="{{ src.last_error }}">{{ src.last_error }}</td>
+      <td class="muted">{{ src.last_polled_at or "—" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No source errors recorded.</p>
+{% endif %}
+{% endblock %}

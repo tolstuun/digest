@@ -20,6 +20,7 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │  POST /admin/event-clusters/{id}/assess                          │
 │  POST /admin/digests/assemble                                    │
 │  POST /admin/digests/{id}/render                                 │
+│  GET|POST /ui/* (server-rendered ops HTML UI)                    │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
@@ -127,7 +128,7 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | `app/routers/digests.py`       | `GET /digests/`, `GET /digests/{id}`                                     |
 | `app/routers/admin.py`         | `POST /admin/digests/assemble` (extended)                                |
 
-### Phase 4B — HTML Rendering
+### Phase 4B — HTML Rendering ✅
 
 | Component                        | Description                                                              |
 |----------------------------------|--------------------------------------------------------------------------|
@@ -138,6 +139,20 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | `app/schemas/digest_page.py`     | `DigestPageOut` Pydantic schema (metadata; no html_content)              |
 | `app/routers/digest_pages.py`    | `GET /digest-pages/`, `GET /digest-pages/{slug}` (returns HTMLResponse)  |
 | `app/routers/admin.py`           | `POST /admin/digests/{id}/render` (extended)                             |
+
+### Phase 4C — Ops/Admin UI + YAML Config
+
+| Component                            | Description                                                                 |
+|--------------------------------------|-----------------------------------------------------------------------------|
+| `app/config.py`                      | YAML config loader: structured sections, env var override chain             |
+| `config/settings.example.yaml`       | Committed template; real `config/settings.yaml` is git-ignored              |
+| `app/routers/ui.py`                  | Server-rendered HTML UI under `/ui/` — Jinja2, no JS, no SPA               |
+| `app/templates/base.html`            | Base layout with nav bar and flash message rendering                        |
+| `app/templates/ui/dashboard.html`    | Counts for all pipeline tables + recent source errors                       |
+| `app/templates/ui/sources.html`      | Sources table with Ingest + Normalize action buttons                        |
+| `app/templates/ui/event_clusters.html` | Clusters table with assessment status, score + Assess button              |
+| `app/templates/ui/digests.html`      | Digest runs table with Assemble form + Render + page link                   |
+| `app/templates/ui/config.html`       | Read-only config view; secrets masked via `mask_secret` Jinja2 filter       |
 
 ## Database schema (current)
 
@@ -349,10 +364,23 @@ Return {source_id, total, new, skipped}
 | Migrations  | Alembic             | Standard SQLAlchemy companion                  |
 | Database    | PostgreSQL 16       | Reliable, JSONB, future FTS                    |
 | Validation  | Pydantic v2         | Fast, typed, FastAPI native                    |
-| Config      | pydantic-settings   | Reads from env / .env                          |
+| Config      | YAML + env vars     | YAML file (settings.yaml), env vars override   |
+| UI templates| Jinja2              | Server-rendered HTML ops UI; no JS/SPA         |
 | RSS parsing | feedparser          | Handles RSS/Atom/malformed feeds               |
 | Runtime     | Docker Compose      | Reproducible local + server environments       |
 | CI/CD       | GitHub Actions      | Simple, repository-native                      |
+
+## ADR-011: YAML config with env var override chain
+
+**Decision:** Runtime config is read from `config/settings.yaml` (path overridable via `APP_CONFIG_PATH`). Environment variables always take priority over YAML values. Built-in defaults apply when neither is set.
+
+**Reason:** A YAML file with named sections (`database.url`, `llm.api_key`, etc.) is easier to review and manage than a flat list of env vars — especially as the config grows (Telegram, LLM models, app URLs). Environment variables still win so that Docker Compose and CI workflows continue to work without modification. The file is git-ignored; `config/settings.example.yaml` is the committed template.
+
+## ADR-012: Server-rendered HTML UI under `/ui/` prefix
+
+**Decision:** The internal ops UI lives under `/ui/` (not `/admin/`) using Jinja2 templates + minimal inline CSS. No JavaScript framework, no SPA, no separate frontend build.
+
+**Reason:** The existing JSON admin API lives under `/admin/*` (POST endpoints). Using `/ui/` avoids route conflicts and makes the distinction clear: `/admin/*` = JSON operations API, `/ui/*` = HTML ops UI. Server-rendered HTML with Jinja2 is fast to implement, easy to test, requires no build tooling, and is appropriate for an internal operational tool.
 
 ## ADR-001: Sync over async for DB access
 

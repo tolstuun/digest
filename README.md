@@ -54,7 +54,7 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /digests/`, `GET /digests/{id}` — list and detail with entries in rank order
 - `POST /admin/digests/assemble` — accepts `{digest_date, max_entries?}`
 
-**Phase 4B — HTML rendering foundation** ✅ *(current)*
+**Phase 4B — HTML rendering foundation** ✅
 - `digest_pages` table — one rendered page per digest run; unique FK on digest_run_id
 - `render_digest_html()` — pure function: no DB, no LLM; builds complete HTML from run + entries
 - `render_digest_page()` — idempotent upsert: repeated renders update existing page (stable page ID)
@@ -63,7 +63,17 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /digest-pages/{slug}` — returns rendered HTML with `Content-Type: text/html`
 - `POST /admin/digests/{digest_run_id}/render` — trigger rendering for a run
 
-**Not yet implemented:** Telegram publishing, schedulers, multi-section orchestration, fuzzy/semantic clustering.
+**Phase 4C — Ops/admin UI + YAML config** ✅ *(current)*
+- YAML config loader with structured sections (app, database, llm, telegram); env vars always override
+- Config path: `config/settings.yaml` (default) or `APP_CONFIG_PATH` env var; git-ignored; `config/settings.example.yaml` is the committed template
+- Internal ops UI under `/ui/` — Jinja2 templates, no JS, no SPA
+  - Dashboard: pipeline object counts + recent source errors
+  - Sources: table with Ingest + Normalize buttons
+  - Clusters: table with assessment status, final score + Assess button
+  - Digests: table with status, entry counts + Assemble form + Render button + page link
+  - Config: read-only config view with secrets masked
+
+**Not yet implemented:** Telegram publishing, schedulers, multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
 
 ---
 
@@ -73,6 +83,15 @@ Publishes a daily web page and sends a Telegram message linking to it.
 
 Docker and Docker Compose.
 
+### Config file (optional)
+
+```bash
+cp config/settings.example.yaml config/settings.yaml
+# Edit config/settings.yaml — set llm.api_key, telegram settings, etc.
+# config/settings.yaml is git-ignored and must not be committed.
+# Environment variables (DATABASE_URL, ANTHROPIC_API_KEY) always override YAML values.
+```
+
 ### Start the stack
 
 ```bash
@@ -81,6 +100,7 @@ docker compose up --build
 
 App: http://localhost:8000
 API docs: http://localhost:8000/docs
+Ops UI: http://localhost:8000/ui/
 
 ### Run migrations
 
@@ -172,6 +192,11 @@ curl http://localhost:8000/digest-pages/
 | GET    | /digest-pages/                     | List all rendered digest pages           |
 | GET    | /digest-pages/{slug}               | Get rendered HTML page by slug           |
 | POST   | /admin/digests/{id}/render         | Render HTML page for a digest run        |
+| GET    | /ui/                               | Ops UI — dashboard                       |
+| GET    | /ui/sources                        | Ops UI — sources list + action buttons   |
+| GET    | /ui/event-clusters                 | Ops UI — clusters list + assess button   |
+| GET    | /ui/digests                        | Ops UI — digest runs + assemble/render   |
+| GET    | /ui/config                         | Ops UI — read-only config view           |
 
 Full interactive docs: http://localhost:8000/docs
 
@@ -181,7 +206,7 @@ Full interactive docs: http://localhost:8000/docs
 
 ```
 app/
-  config.py               settings (DATABASE_URL via env)
+  config.py               YAML config loader (app/database/llm/telegram sections; env vars override)
   database.py             SQLAlchemy engine, session, Base
   main.py                 FastAPI app, router registration
   models/
@@ -219,6 +244,11 @@ app/
   rendering/
     html.py               render_digest_html() — pure function, no DB, no LLM
     service.py            render_digest_page() — DB upsert of DigestPage
+  templates/
+    base.html             base layout with nav bar
+    ui/                   ops UI page templates (dashboard, sources, clusters, digests, config)
+config/
+  settings.example.yaml  committed example config (copy to settings.yaml for local use)
 alembic/
   versions/
     0001_initial_sources.py

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Digests — Digest Ops{% endblock %}
+{% block content %}
+<div class="section-header">
+  <h1>Digests</h1>
+  <form method="post" action="/ui/digests/assemble" style="display:flex;gap:8px;align-items:center">
+    <input type="date" name="digest_date" value="{{ today }}" style="padding:4px 8px;font-size:13px;border:1px solid #bbb;border-radius:3px">
+    <button class="btn btn-primary" type="submit">Assemble</button>
+  </form>
+</div>
+
+{% if runs %}
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Section</th>
+      <th>Status</th>
+      <th>Candidates</th>
+      <th>Included</th>
+      <th>Generated</th>
+      <th>Page</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in runs %}
+    <tr>
+      <td>{{ row.digest_date }}</td>
+      <td>{{ row.section_name }}</td>
+      <td>
+        {% if row.status == "assembled" %}
+          <span class="badge badge-ok">{{ row.status }}</span>
+        {% elif row.status == "empty" %}
+          <span class="badge badge-warn">{{ row.status }}</span>
+        {% else %}
+          <span class="badge badge-info">{{ row.status }}</span>
+        {% endif %}
+      </td>
+      <td>{{ row.total_candidate_clusters }}</td>
+      <td>{{ row.total_included_clusters }}</td>
+      <td class="muted">{{ row.generated_at.strftime("%Y-%m-%d %H:%M") if row.generated_at else "—" }}</td>
+      <td>
+        {% if row.page_slug %}
+          <a href="/digest-pages/{{ row.page_slug }}" target="_blank" class="btn">View</a>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        <form class="inline" method="post" action="/ui/digests/{{ row.id }}/render">
+          <button class="btn" type="submit">Render</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No digest runs yet. Use the Assemble button above.</p>
+{% endif %}
+{% endblock %}

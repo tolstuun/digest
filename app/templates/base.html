@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Security Digest Ops{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f5; color: #222; font-size: 14px; }
+    nav { background: #1a1a2e; color: #eee; padding: 0 1.5rem; display: flex; align-items: center; gap: 1.5rem; height: 44px; }
+    nav a { color: #ccc; text-decoration: none; font-size: 13px; }
+    nav a:hover, nav a.active { color: #fff; text-decoration: underline; }
+    nav .brand { color: #fff; font-weight: 600; font-size: 14px; margin-right: 1rem; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.25rem; margin: 0 0 1.25rem; }
+    h2 { font-size: 1rem; margin: 1.25rem 0 0.75rem; }
+    table { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid #ddd; border-radius: 4px; }
+    th { background: #f0f0f0; text-align: left; padding: 6px 10px; font-size: 12px; color: #555; border-bottom: 1px solid #ddd; }
+    td { padding: 6px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fafafa; }
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+    .badge-yes { background: #d4edda; color: #155724; }
+    .badge-no  { background: #f8d7da; color: #721c24; }
+    .badge-ok  { background: #d4edda; color: #155724; }
+    .badge-warn{ background: #fff3cd; color: #856404; }
+    .badge-info{ background: #d1ecf1; color: #0c5460; }
+    .btn { display: inline-block; padding: 4px 10px; font-size: 12px; border: 1px solid #bbb; border-radius: 3px; background: #fff; cursor: pointer; color: #333; text-decoration: none; }
+    .btn:hover { background: #eee; }
+    .btn-primary { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
+    .btn-primary:hover { background: #2a2a4e; }
+    form.inline { display: inline; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .stat-card { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 1rem; }
+    .stat-card .num { font-size: 2rem; font-weight: 700; color: #1a1a2e; line-height: 1; }
+    .stat-card .label { font-size: 11px; color: #888; margin-top: 4px; }
+    .error-cell { color: #c00; font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .muted { color: #aaa; font-size: 12px; }
+    .flash { padding: 8px 12px; border-radius: 4px; margin-bottom: 1rem; font-size: 13px; }
+    .flash-ok   { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .flash-err  { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    pre { background: #f8f8f8; border: 1px solid #ddd; border-radius: 4px; padding: 1rem; font-size: 12px; overflow-x: auto; }
+    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+  </style>
+</head>
+<body>
+<nav>
+  <span class="brand">Digest Ops</span>
+  <a href="/ui/" {% if active == 'dashboard' %}class="active"{% endif %}>Dashboard</a>
+  <a href="/ui/sources" {% if active == 'sources' %}class="active"{% endif %}>Sources</a>
+  <a href="/ui/event-clusters" {% if active == 'event-clusters' %}class="active"{% endif %}>Clusters</a>
+  <a href="/ui/digests" {% if active == 'digests' %}class="active"{% endif %}>Digests</a>
+  <a href="/ui/config" {% if active == 'config' %}class="active"{% endif %}>Config</a>
+</nav>
+<div class="container">
+  {% if flash %}
+    <div class="flash flash-{{ flash.level }}">{{ flash.message }}</div>
+  {% endif %}
+  {% block content %}{% endblock %}
+</div>
+</body>
+</html>
