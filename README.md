@@ -85,12 +85,22 @@ Docker and Docker Compose.
 
 ### Config file (optional)
 
+Runtime configuration is **YAML-only**. No runtime values are read from environment variables. The only accepted env var is `APP_CONFIG_PATH`, which selects which file to load.
+
 ```bash
 cp config/settings.example.yaml config/settings.yaml
-# Edit config/settings.yaml — set llm.api_key, telegram settings, etc.
-# config/settings.yaml is git-ignored and must not be committed.
-# Environment variables (DATABASE_URL, ANTHROPIC_API_KEY) always override YAML values.
+# Edit config/settings.yaml — set database.url, llm.api_key, telegram settings, etc.
+# config/settings.yaml is git-ignored and must never be committed.
 ```
+
+**Committed config files (no secrets, safe to commit):**
+- `config/settings.example.yaml` — template; uses `localhost:5432`
+- `config/settings.compose.yaml` — Docker Compose defaults; uses `db:5432` service name
+
+**Docker Compose** automatically loads `config/settings.compose.yaml` via `APP_CONFIG_PATH`.
+To add credentials (LLM key, Telegram), override: `APP_CONFIG_PATH=/app/config/settings.yaml` and mount your real file.
+
+**CI** uses `APP_CONFIG_PATH=config/settings.example.yaml` (localhost DB matches CI postgres service).
 
 ### Start the stack
 
@@ -123,7 +133,9 @@ docker compose run --rm app pytest tests/test_normalization.py::test_normalize_i
 ### Without Docker (requires local PostgreSQL)
 
 ```bash
-cp .env.example .env   # set DATABASE_URL
+cp config/settings.example.yaml config/settings.yaml
+# Edit config/settings.yaml — set database.url, llm.api_key, etc.
+export APP_CONFIG_PATH=config/settings.yaml
 pip install -r requirements-dev.txt
 alembic upgrade head
 pytest -v

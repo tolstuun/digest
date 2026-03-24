@@ -33,7 +33,7 @@ Current tables: `sources`, `raw_items`, `stories`, `story_facts`, `event_cluster
 Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `GET /stories/{id}/facts`, `GET /event-clusters/`, `GET /event-clusters/{id}`, `GET /event-clusters/{id}/assessment`, `GET /digests/`, `GET /digests/{id}`, `GET /digest-pages/`, `GET /digest-pages/{slug}`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`, `POST /admin/stories/{id}/extract-facts`, `POST /admin/stories/{id}/cluster-event`, `POST /admin/event-clusters/{id}/assess`, `POST /admin/digests/assemble`, `POST /admin/digests/{id}/render`.
 Ops UI (Jinja2 HTML, no JS): `GET /ui/`, `GET /ui/sources`, `GET /ui/event-clusters`, `GET /ui/digests`, `GET /ui/config`. Action POST endpoints under `/ui/` call existing services and redirect.
 
-Config: YAML file at `config/settings.yaml` (default) or `APP_CONFIG_PATH` env var. Sections: `app`, `database`, `llm`, `telegram`. Env vars (`DATABASE_URL`, `ANTHROPIC_API_KEY`) always override YAML. `config/settings.example.yaml` is the committed template.
+Config: **YAML-only**. All runtime config comes from a YAML file. `APP_CONFIG_PATH` selects which file; no other env vars are read. Default path: `config/settings.yaml`. Committed files: `config/settings.example.yaml` (localhost, for CI and local non-Docker), `config/settings.compose.yaml` (db hostname, used by docker-compose). Sections: `app`, `database`, `llm`, `telegram`.
 
 Two LLM boundaries (both mockable):
 - `app.extraction.llm.extract_facts_llm(story_input)` — fact extraction

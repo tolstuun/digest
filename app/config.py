@@ -1,23 +1,31 @@
 """
-Runtime configuration loader.
+Runtime configuration loader — YAML only.
 
-Priority (highest to lowest):
-  1. Environment variables (DATABASE_URL, ANTHROPIC_API_KEY)
-  2. YAML config file (APP_CONFIG_PATH or config/settings.yaml)
-  3. Built-in defaults
+All runtime configuration is read exclusively from a YAML file.
+No runtime values (database URL, API keys, etc.) are read from environment
+variables. The only environment variable recognised by this module is
+APP_CONFIG_PATH, and it may only select which file to load.
 
-For local dev without a YAML file, set DATABASE_URL and ANTHROPIC_API_KEY
-as environment variables (or in .env via docker-compose).
+Config file location (in order of precedence):
+  1. config_path argument passed to load_settings()
+  2. APP_CONFIG_PATH environment variable
+  3. Default: config/settings.yaml
 
-For server deployment, mount a real config/settings.yaml and optionally
-set APP_CONFIG_PATH to point at it.
+If the selected file does not exist, built-in defaults are used.
+
+For Docker Compose development:
+  - APP_CONFIG_PATH is set to /app/config/settings.compose.yaml in
+    docker-compose.yml. That file is committed to the repo.
+
+For server deployment:
+  - Mount config/settings.yaml and set APP_CONFIG_PATH if needed.
+  - Copy config/settings.example.yaml as a template.
 """
 from __future__ import annotations
 
 import logging
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -86,7 +94,7 @@ class Settings:
 def _load_yaml(path: str) -> dict:
     """Load YAML file; return empty dict on missing file or parse error."""
     try:
-        import yaml  # lazy import — only needed when file exists
+        import yaml  # lazy import
     except ImportError:
         logger.warning("pyyaml not installed; YAML config loading disabled")
         return {}
@@ -104,16 +112,19 @@ def _load_yaml(path: str) -> dict:
 
 def load_settings(config_path: Optional[str] = None) -> Settings:
     """
-    Build a Settings object.
+    Build a Settings object from a YAML file.
 
-    1. Start with built-in defaults.
-    2. Overlay values from the YAML file (if it exists).
-    3. Overlay values from environment variables (always win).
+    Config file is selected (in order) by:
+      1. config_path argument
+      2. APP_CONFIG_PATH environment variable
+      3. Default path config/settings.yaml
+
+    APP_CONFIG_PATH is the only environment variable read here.
+    No runtime configuration values are read from environment variables.
     """
     resolved_path = config_path or os.environ.get("APP_CONFIG_PATH", _DEFAULT_CONFIG_PATH)
     s = Settings(config_path=resolved_path)
 
-    # 2. YAML overlay
     data = _load_yaml(resolved_path)
     if data:
         logger.info("Loaded config from %s", resolved_path)
@@ -147,19 +158,6 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             s.telegram.bot_token = tg_data["bot_token"]
         if "chat_id" in tg_data:
             s.telegram.chat_id = str(tg_data["chat_id"])
-
-    # 3. Environment variable overrides (always win over YAML)
-    db_url_env = os.environ.get("DATABASE_URL")
-    if db_url_env:
-        s.database.url = db_url_env
-
-    api_key_env = os.environ.get("ANTHROPIC_API_KEY")
-    if api_key_env:
-        s.llm.api_key = api_key_env
-
-    extraction_model_env = os.environ.get("EXTRACTION_MODEL")
-    if extraction_model_env:
-        s.llm.model_extraction = extraction_model_env
 
     return s
 

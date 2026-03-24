@@ -1,0 +1,29 @@
+# Docker Compose runtime configuration.
+#
+# This file is committed to the repo. It contains no secrets —
+# only service names and defaults suitable for local Docker Compose development.
+#
+# Used by docker-compose.yml via:
+#   APP_CONFIG_PATH: /app/config/settings.compose.yaml
+#
+# To add real LLM/Telegram credentials for local dev, copy this file to
+# config/settings.yaml and fill in the values. config/settings.yaml is
+# git-ignored and will take precedence when you set APP_CONFIG_PATH to it.
+
+app:
+  public_base_url: "http://localhost:8000"
+
+database:
+  # "db" is the postgres service name in docker-compose.yml
+  url: "postgresql://digest:digest@db:5432/digest"
+
+llm:
+  provider: "anthropic"
+  api_key: ""                               # set in config/settings.yaml for real LLM calls
+  model_extraction: "claude-haiku-4-5-20251001"
+  model_scoring: "claude-haiku-4-5-20251001"
+
+telegram:
+  enabled: false
+  bot_token: ""                             # set in config/settings.yaml
+  chat_id: ""

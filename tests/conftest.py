@@ -1,18 +1,17 @@
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.config import settings
 from app.database import Base, get_db
 from app.main import app
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://digest:digest@localhost:5432/digest"
-)
-
-engine = create_engine(DATABASE_URL)
+# Test database URL comes from the same YAML config as the application.
+# In Docker Compose: APP_CONFIG_PATH points to config/settings.compose.yaml
+# In CI:            APP_CONFIG_PATH points to config/settings.example.yaml
+# Both have the correct hostname for their environment.
+engine = create_engine(settings.database_url)
 TestingSessionLocal = sessionmaker(engine)
 
 

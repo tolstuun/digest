@@ -364,17 +364,30 @@ Return {source_id, total, new, skipped}
 | Migrations  | Alembic             | Standard SQLAlchemy companion                  |
 | Database    | PostgreSQL 16       | Reliable, JSONB, future FTS                    |
 | Validation  | Pydantic v2         | Fast, typed, FastAPI native                    |
-| Config      | YAML + env vars     | YAML file (settings.yaml), env vars override   |
+| Config      | YAML only           | YAML file; APP_CONFIG_PATH selects file only   |
 | UI templates| Jinja2              | Server-rendered HTML ops UI; no JS/SPA         |
 | RSS parsing | feedparser          | Handles RSS/Atom/malformed feeds               |
 | Runtime     | Docker Compose      | Reproducible local + server environments       |
 | CI/CD       | GitHub Actions      | Simple, repository-native                      |
 
-## ADR-011: YAML config with env var override chain
+## ADR-011: YAML-only runtime configuration
 
-**Decision:** Runtime config is read from `config/settings.yaml` (path overridable via `APP_CONFIG_PATH`). Environment variables always take priority over YAML values. Built-in defaults apply when neither is set.
+**Decision:** All runtime configuration is read exclusively from a YAML file. The only environment variable accepted by the config loader is `APP_CONFIG_PATH`, which selects which file to load. No runtime values (database URL, API keys, Telegram tokens, etc.) are read from environment variables.
 
-**Reason:** A YAML file with named sections (`database.url`, `llm.api_key`, etc.) is easier to review and manage than a flat list of env vars — especially as the config grows (Telegram, LLM models, app URLs). Environment variables still win so that Docker Compose and CI workflows continue to work without modification. The file is git-ignored; `config/settings.example.yaml` is the committed template.
+**Config file selection order:**
+1. `config_path` argument to `load_settings()` (used in tests)
+2. `APP_CONFIG_PATH` environment variable
+3. Default: `config/settings.yaml`
+
+**Committed config files:**
+- `config/settings.example.yaml` — template for human reference and CI use (`localhost:5432`)
+- `config/settings.compose.yaml` — docker-compose defaults (`db:5432`); no secrets; committed
+
+**Git-ignored config files:** `config/settings.yaml`, `config/settings.local.yaml`
+
+**Reason:** A YAML file with named sections is explicit, reviewable, and version-controllable without committing secrets. Allowing env var overrides for individual values creates a second implicit config surface — values can come from either YAML or env, making the effective config hard to reason about. With YAML-only policy, the config in the file is the config; there are no hidden overrides.
+
+**CI note:** CI workflow sets `APP_CONFIG_PATH=config/settings.example.yaml` (which uses `localhost:5432`, matching the CI postgres service). No `DATABASE_URL` env var is needed or read.
 
 ## ADR-012: Server-rendered HTML UI under `/ui/` prefix
 
