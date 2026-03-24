@@ -31,14 +31,21 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `extract_story_facts()` service — idempotent upsert, stores model name + raw output
 - `GET /stories/{id}/facts`, `POST /admin/stories/{id}/extract-facts`
 
-**Phase 3A — Event clustering** ✅ *(current)*
+**Phase 3A — Event clustering** ✅
 - `event_clusters` table — one cluster per unique event (keyed by type + companies + amount + currency)
 - `stories.event_cluster_id` — nullable FK; one story belongs to at most one cluster
 - `build_cluster_key()` — pure deterministic function, no LLM, no fuzzy matching
 - `cluster_story()` service — idempotent; creates or joins cluster; first story becomes representative
 - `GET /event-clusters/`, `GET /event-clusters/{id}`, `POST /admin/stories/{id}/cluster-event`
 
-**Not yet implemented:** sections, scoring, digest assembly, publishing, fuzzy/semantic clustering.
+**Phase 3B — Editorial scoring** ✅ *(current)*
+- `event_cluster_assessments` table — one row per cluster (upserted on reassessment)
+- `compute_rule_score()` — deterministic pre-score; weights visible in code (event_type, coverage, amount, source priority)
+- `assess_cluster_llm()` — Anthropic tool-use boundary: returns `primary_section`, `llm_score`, `include_in_digest`, bilingual editorial notes
+- `assess_cluster()` — combines scores: `final_score = 0.4 * rule_score + 0.6 * llm_score`; idempotent upsert
+- `GET /event-clusters/{id}/assessment`, `POST /admin/event-clusters/{id}/assess`
+
+**Not yet implemented:** digest assembly, rendering, publishing, schedulers, fuzzy/semantic clustering.
 
 ---
 

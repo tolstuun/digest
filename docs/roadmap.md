@@ -41,7 +41,7 @@ Goal: extract structured facts from each story using an LLM.
 - `GET /stories/{id}/facts`, `POST /admin/stories/{id}/extract-facts`
 - Migration 0005
 
-## Phase 3A — Event clustering ✅ (current)
+## Phase 3A — Event clustering ✅
 
 Goal: group stories describing the same real-world event using extracted structured facts.
 
@@ -56,14 +56,17 @@ Goal: group stories describing the same real-world event using extracted structu
 
 **Intentionally not in this phase:** fuzzy/semantic matching, NLP, LLM-assisted clustering, publication date proximity, scoring.
 
-## Phase 3B — Enrichment and scoring (planned)
+## Phase 3B — Editorial scoring ✅ *(current)*
 
-Goal: add editorial signals to stories and clusters.
+Goal: add editorial signals to event clusters — rule-based pre-score + LLM editorial judgment.
 
-- `entities` table (companies, people, events)
-- `sections` table (configurable digest sections)
-- Story-to-section relevance scoring (LLM-assisted)
-- Priority/relevance score per story per section
+- `event_cluster_assessments` table: one row per cluster, upserted on reassessment
+- `compute_rule_score()`: deterministic pre-score; weights visible in code (event_type base, coverage bonus, financial bonus, source priority bonus)
+- `assess_cluster_llm()`: single Anthropic tool-use LLM boundary; returns `primary_section`, `llm_score`, `include_in_digest`, bilingual editorial notes
+- `assess_cluster()`: combines scores — `final_score = 0.4 * rule_score + 0.6 * llm_score`; idempotent upsert
+- `GET /event-clusters/{id}/assessment`
+- `POST /admin/event-clusters/{id}/assess`
+- Migration 0007
 
 ## Phase 4 — Digest assembly and publishing
 

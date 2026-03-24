@@ -27,14 +27,18 @@ The system publishes a daily web page and sends a Telegram message with a link t
 
 ## Current repository state
 
-Phase 3A (event clustering) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
+Phase 3B (editorial scoring) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
 
-Current tables: `sources`, `raw_items`, `stories`, `story_facts`, `event_clusters`.
-Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `GET /stories/{id}/facts`, `GET /event-clusters/`, `GET /event-clusters/{id}`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`, `POST /admin/stories/{id}/extract-facts`, `POST /admin/stories/{id}/cluster-event`.
+Current tables: `sources`, `raw_items`, `stories`, `story_facts`, `event_clusters`, `event_cluster_assessments`.
+Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `GET /stories/{id}/facts`, `GET /event-clusters/`, `GET /event-clusters/{id}`, `GET /event-clusters/{id}/assessment`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`, `POST /admin/stories/{id}/extract-facts`, `POST /admin/stories/{id}/cluster-event`, `POST /admin/event-clusters/{id}/assess`.
 
-LLM extraction uses Anthropic tool-use (`claude-haiku-4-5-20251001` by default). Config via env: `ANTHROPIC_API_KEY`, `EXTRACTION_MODEL`. The single LLM boundary is `app.extraction.llm.extract_facts_llm(story_input)` — all service tests mock at this name.
+Two LLM boundaries (both mockable):
+- `app.extraction.llm.extract_facts_llm(story_input)` — fact extraction
+- `app.scoring.llm.assess_cluster_llm(cluster_input)` — editorial scoring
 
-Clustering is deterministic, no LLM. The cluster key is built from `event_type + sorted(company_names) + amount_text + currency`. Stories with `event_type` of `unknown` or `other`, or with no company names, are not clustered.
+Clustering is deterministic, no LLM. The cluster key is built from `event_type + sorted(company_names) + amount_text + currency`.
+
+Scoring: `rule_score` from `app.scoring.rules.compute_rule_score()` (explicit weights in code) + `llm_score` from LLM → `final_score = 0.4 * rule_score + 0.6 * llm_score`.
 
 Deploy uses SSH secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`. The server path is `/opt/security-digest/`.
 
