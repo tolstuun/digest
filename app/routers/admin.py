@@ -25,9 +25,11 @@ from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
+from app.orchestration.service import run_daily_pipeline
 from app.publishing.service import publish_to_telegram
 from app.rendering.service import render_digest_page
 from app.schemas.digest_publication import DigestPublicationOut
+from app.schemas.pipeline_run import PipelineRunDetail
 from app.schemas.story_facts import StoryFactsOut
 from app.scoring.service import assess_cluster
 
@@ -252,3 +254,40 @@ def trigger_render_digest(
         "rendered_at": page.rendered_at.isoformat() if page.rendered_at else None,
         "created": created,
     }
+
+
+class RunDailyRequest(BaseModel):
+    run_date: date
+    publish_telegram: Optional[bool] = None
+
+
+@router.post("/pipeline-runs/run-daily")
+def trigger_run_daily(
+    req: RunDailyRequest, db: Session = Depends(get_db)
+) -> dict:
+    """
+    Manually trigger a full daily pipeline run.
+
+    Creates a new PipelineRun row each call (history is preserved).
+    Relies on per-stage idempotency for safe reruns.
+
+    publish_telegram:
+      null  → use scheduler.publish_telegram_by_default from config
+      true  → publish regardless of scheduler config
+      false → skip publishing regardless of scheduler config
+
+    Returns a run summary including pipeline_run_id, status, step results,
+    and key IDs (digest_run_id, digest_page_id, digest_publication_id if created).
+    """
+    logger.info(
+        "Manual daily pipeline run triggered for date=%s publish_telegram=%s",
+        req.run_date, req.publish_telegram,
+    )
+    summary = run_daily_pipeline(
+        db=db,
+        run_date=req.run_date,
+        trigger_type="manual",
+        publish_telegram=req.publish_telegram,
+        cfg=settings,
+    )
+    return summary

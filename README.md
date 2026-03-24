@@ -73,7 +73,7 @@ Publishes a daily web page and sends a Telegram message linking to it.
   - Digests: table with status, entry counts + Assemble form + Render button + page link
   - Config: read-only config view with secrets masked
 
-**Phase 4D — Telegram publishing** ✅ *(current)*
+**Phase 4D — Telegram publishing** ✅
 - `digest_publications` table — one row per `(digest_page_id, channel_type, target)`; idempotent upsert on re-publish
 - `app/publishing/telegram.py` — narrow HTTP boundary: `build_message_text()` + `send_telegram_message()` (fully mockable)
 - `app/publishing/service.py` — `publish_to_telegram()`: idempotent, reads YAML config, builds public URL, persists result
@@ -83,7 +83,19 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /digest-publications/`, `GET /digest-publications/{id}`
 - UI: Publish to Telegram button on digests page (shown when `telegram.enabled=true`); publication status column
 
-**Not yet implemented:** schedulers, multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
+**Phase 4E — Daily scheduler + run orchestration** ✅ *(current)*
+- `pipeline_runs` table — one row per pipeline execution; columns: run_date, trigger_type, status, started_at, finished_at, error_message
+- `pipeline_run_steps` table — one row per step per run; columns: step_name, status, started_at, finished_at, error_message, details_json
+- `run_daily_pipeline()` — sequential orchestrator: ingest all sources → normalize → extract facts → cluster → assess → assemble digest → render → publish Telegram
+- Rerun policy: always create a new `pipeline_run` row; stage-level idempotency handles data deduplication
+- Failure policy: a hard exception marks the step and run "failed" and stops execution; soft misses (no data) are "success"
+- `POST /admin/pipeline-runs/run-daily` — manual trigger with `run_date` + optional `publish_telegram` override
+- `GET /pipeline-runs/`, `GET /pipeline-runs/{id}` (with per-step detail)
+- APScheduler `BackgroundScheduler` embedded in FastAPI lifespan — `max_instances=1`, `misfire_grace_time=3600`
+- YAML `scheduler` section: `enabled`, `daily_time_utc` (HH:MM UTC), `publish_telegram_by_default`
+- UI: Pipeline Runs page with step detail table, Run Daily form, status badges
+
+**Not yet implemented:** multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
 
 ---
 
@@ -167,6 +179,22 @@ uvicorn app.main:app --reload
 8.  Render HTML:          POST /admin/digests/{id}/render
 9.  Read page:            GET /digest-pages/{slug}
 10. Publish to Telegram:  POST /admin/digest-pages/{id}/publish-telegram
+11. Run daily pipeline:   POST /admin/pipeline-runs/run-daily
+```
+
+### Triggering the full daily pipeline
+
+```bash
+# Trigger the full daily pipeline for a specific date
+curl -X POST http://localhost:8000/admin/pipeline-runs/run-daily \
+  -H "Content-Type: application/json" \
+  -d '{"run_date": "2026-03-25", "publish_telegram": false}'
+
+# View all pipeline runs
+curl http://localhost:8000/pipeline-runs/
+
+# View a specific run with step detail
+curl http://localhost:8000/pipeline-runs/{pipeline_run_id}
 ```
 
 ### Triggering digest assembly, rendering, and publishing manually
@@ -221,10 +249,14 @@ curl http://localhost:8000/digest-publications/
 | POST   | /admin/digest-pages/{id}/publish-telegram       | Publish digest page to Telegram          |
 | GET    | /digest-publications/                           | List all digest publications             |
 | GET    | /digest-publications/{id}                       | Get digest publication by ID             |
+| GET    | /pipeline-runs/                                 | List all pipeline runs                   |
+| GET    | /pipeline-runs/{id}                             | Get pipeline run detail with steps       |
+| POST   | /admin/pipeline-runs/run-daily                  | Trigger full daily pipeline              |
 | GET    | /ui/                                            | Ops UI — dashboard                       |
 | GET    | /ui/sources                                     | Ops UI — sources list + action buttons   |
 | GET    | /ui/event-clusters                              | Ops UI — clusters list + assess button   |
 | GET    | /ui/digests                                     | Ops UI — digest runs + assemble/render/publish |
+| GET    | /ui/pipeline-runs                               | Ops UI — pipeline runs + step detail     |
 | GET    | /ui/config                                      | Ops UI — read-only config view           |
 
 Full interactive docs: http://localhost:8000/docs
@@ -249,6 +281,8 @@ app/
     digest_entry.py       DigestEntry ORM model
     digest_page.py        DigestPage ORM model
     digest_publication.py DigestPublication ORM model
+    pipeline_run.py       PipelineRun ORM model
+    pipeline_run_step.py  PipelineRunStep ORM model
   schemas/
     source.py             SourceCreate / SourcePatch / SourceOut
     story.py              StoryOut
@@ -256,6 +290,7 @@ app/
     digest.py             DigestRunOut / DigestRunDetail / DigestEntryOut
     digest_page.py        DigestPageOut
     digest_publication.py DigestPublicationOut
+    pipeline_run.py       PipelineRunOut / PipelineRunDetail / PipelineRunStepOut
   routers/
     health.py             GET /health
     sources.py            GET|POST /sources/, GET|PATCH /sources/{id}
@@ -264,9 +299,11 @@ app/
     digests.py            GET /digests/, GET /digests/{id}
     digest_pages.py       GET /digest-pages/, GET /digest-pages/{slug}
     digest_publications.py GET /digest-publications/, GET /digest-publications/{id}
+    pipeline_runs.py      GET /pipeline-runs/, GET /pipeline-runs/{id}
     admin.py              POST /admin/sources/{id}/ingest|normalize, stories/{id}/extract-facts|cluster-event
                           POST /admin/event-clusters/{id}/assess, /admin/digests/assemble
                           POST /admin/digests/{id}/render, /admin/digest-pages/{id}/publish-telegram
+                          POST /admin/pipeline-runs/run-daily
     ui.py                 GET|POST /ui/* — server-rendered ops HTML UI
   ingestion/
     rss.py                RSS feed fetch + parse (feedparser, no DB)
@@ -294,9 +331,12 @@ app/
   publishing/
     telegram.py           build_message_text() + send_telegram_message() — narrow HTTP boundary
     service.py            publish_to_telegram() — idempotent upsert, YAML config, public URL
+  orchestration/
+    service.py            run_daily_pipeline() — sequential 8-step orchestrator; PipelineRun + PipelineRunStep persistence
+  scheduler.py            APScheduler wrapper; start_scheduler() / stop_scheduler(); wired into FastAPI lifespan
   templates/
     base.html             base layout with nav bar
-    ui/                   ops UI page templates (dashboard, sources, clusters, digests, config)
+    ui/                   ops UI page templates (dashboard, sources, clusters, digests, pipeline-runs, config)
 config/
   settings.example.yaml  committed template (copy to settings.yaml for local use)
   settings.compose.yaml  committed Docker Compose config (db hostname, no secrets)
@@ -312,6 +352,7 @@ alembic/
     0008_add_digest_runs_entries.py
     0009_add_digest_pages.py
     0010_add_digest_publications.py
+    0011_add_pipeline_runs.py
 tests/
   conftest.py             session DB setup, per-test truncation, TestClient
   test_health.py
@@ -324,6 +365,7 @@ tests/
   test_digest.py
   test_rendering.py
   test_publishing.py
+  test_orchestration.py
 ```
 
 ---

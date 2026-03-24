@@ -61,6 +61,16 @@ class TelegramConfig:
     chat_id: str = ""
 
 
+@dataclass
+class SchedulerConfig:
+    # Whether the background scheduler is enabled. Default off.
+    enabled: bool = False
+    # Daily run time in UTC, e.g. "06:00". Format: "HH:MM".
+    daily_time_utc: str = "06:00"
+    # If True, publish to Telegram as part of scheduled runs (when telegram is also enabled).
+    publish_telegram_by_default: bool = False
+
+
 # ── top-level settings ────────────────────────────────────────────────────────
 
 
@@ -71,6 +81,7 @@ class Settings:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
     # ── backward-compat properties ────────────────────────────────────────────
     # Existing code that imports `settings.database_url` etc. keeps working.
@@ -158,6 +169,17 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             s.telegram.bot_token = tg_data["bot_token"]
         if "chat_id" in tg_data:
             s.telegram.chat_id = str(tg_data["chat_id"])
+
+    if "scheduler" in data:
+        sc_data = data["scheduler"]
+        if "enabled" in sc_data:
+            s.scheduler.enabled = bool(sc_data["enabled"])
+        if "daily_time_utc" in sc_data:
+            s.scheduler.daily_time_utc = str(sc_data["daily_time_utc"])
+        if "publish_telegram_by_default" in sc_data:
+            s.scheduler.publish_telegram_by_default = bool(
+                sc_data["publish_telegram_by_default"]
+            )
 
     return s
 

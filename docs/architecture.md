@@ -16,13 +16,18 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │  GET /digests/         GET /digests/{id}                         │
 │  GET /digest-pages/    GET /digest-pages/{slug}                  │
 │  GET /digest-publications/  GET /digest-publications/{id}         │
+│  GET /pipeline-runs/        GET /pipeline-runs/{id}              │
 │  POST /admin/sources/{id}/ingest|normalize                       │
 │  POST /admin/stories/{id}/extract-facts|cluster-event            │
 │  POST /admin/event-clusters/{id}/assess                          │
 │  POST /admin/digests/assemble                                    │
 │  POST /admin/digests/{id}/render                                 │
 │  POST /admin/digest-pages/{id}/publish-telegram                  │
+│  POST /admin/pipeline-runs/run-daily                             │
 │  GET|POST /ui/* (server-rendered ops HTML UI)                    │
+│                                                                  │
+│  APScheduler BackgroundScheduler (embedded, lifespan-managed)    │
+│  max_instances=1, misfire_grace_time=3600                        │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
@@ -32,7 +37,8 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │  sources    raw_items    stories    story_facts    event_clusters │
 │  event_cluster_assessments  digest_runs  digest_entries          │
 │  digest_pages   digest_publications                              │
-│  (planned) entities  sections  job_runs                          │
+│  pipeline_runs  pipeline_run_steps                               │
+│  (planned) entities  sections                                    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -47,6 +53,9 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
           → assemble digest ✅ → digest_runs + digest_entries
           → render HTML ✅ → digest_pages (slug, html_content)
           → publish Telegram ✅ → digest_publications
+
+[scheduler] → run_daily_pipeline ✅ → pipeline_runs + pipeline_run_steps (per-step observability)
+             (APScheduler cron; also triggerable via POST /admin/pipeline-runs/run-daily)
 ```
 
 ## Implemented components
@@ -167,6 +176,20 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | `app/schemas/digest_publication.py`    | `DigestPublicationOut` Pydantic schema                                    |
 | `app/routers/digest_publications.py`   | `GET /digest-publications/`, `GET /digest-publications/{id}`              |
 | `app/routers/admin.py`                 | `POST /admin/digest-pages/{id}/publish-telegram` (extended)               |
+
+### Phase 4E — Daily Scheduler + Run Orchestration
+
+| Component                              | Description                                                                        |
+|----------------------------------------|------------------------------------------------------------------------------------|
+| `app/models/pipeline_run.py`           | `PipelineRun` ORM model: one row per pipeline execution                            |
+| `app/models/pipeline_run_step.py`      | `PipelineRunStep` ORM model: one row per step per run; CASCADE delete              |
+| `app/orchestration/service.py`         | `run_daily_pipeline()` — sequential 8-step orchestrator; persists run + steps      |
+| `app/scheduler.py`                     | APScheduler wrapper: `start_scheduler()` / `stop_scheduler()` / `_run_scheduled_job()` |
+| `app/schemas/pipeline_run.py`          | `PipelineRunOut`, `PipelineRunDetail`, `PipelineRunStepOut` Pydantic schemas        |
+| `app/routers/pipeline_runs.py`         | `GET /pipeline-runs/`, `GET /pipeline-runs/{id}`                                   |
+| `app/routers/admin.py`                 | `POST /admin/pipeline-runs/run-daily` (extended)                                   |
+| `app/routers/ui.py`                    | `GET /ui/pipeline-runs`, `POST /ui/pipeline-runs/run-daily` (extended)             |
+| `app/templates/ui/pipeline_runs.html`  | Pipeline runs table with step detail, Run Daily form                               |
 
 ## Database schema (current)
 
@@ -340,6 +363,35 @@ Unique constraint: `(digest_date, section_name)` — one run per date+section.
 | updated_at          | timestamptz   |                                                                        |
 
 Unique constraint: `(digest_page_id, channel_type, target)` — one publication per channel per page.
+
+### `pipeline_runs`
+
+| Column         | Type          | Notes                                                    |
+|----------------|---------------|----------------------------------------------------------|
+| id             | UUID PK       |                                                          |
+| run_date       | date          | not null; index                                          |
+| trigger_type   | varchar(32)   | `scheduled` or `manual`                                  |
+| status         | varchar(32)   | `running` → `success` or `failed`                        |
+| started_at     | timestamptz   | nullable; set when run begins                            |
+| finished_at    | timestamptz   | nullable; set when run ends                              |
+| error_message  | text          | nullable; set on failure                                 |
+| created_at     | timestamptz   |                                                          |
+| updated_at     | timestamptz   |                                                          |
+
+### `pipeline_run_steps`
+
+| Column           | Type          | Notes                                                  |
+|------------------|---------------|--------------------------------------------------------|
+| id               | UUID PK       |                                                        |
+| pipeline_run_id  | UUID FK       | → pipeline_runs.id CASCADE DELETE                      |
+| step_name        | varchar(64)   | e.g. `ingest`, `normalize`, `extract_facts`, ...       |
+| status           | varchar(32)   | `running` → `success` or `failed`                      |
+| started_at       | timestamptz   | nullable                                               |
+| finished_at      | timestamptz   | nullable                                               |
+| error_message    | text          | nullable                                               |
+| details_json     | jsonb         | nullable; step-specific output details                 |
+| created_at       | timestamptz   |                                                        |
+| updated_at       | timestamptz   |                                                        |
 
 ## Normalization flow (Phase 2A)
 
@@ -557,3 +609,38 @@ Return {digest_page_id, digest_run_id, slug, rendered_at, created}
 Public read:
   GET /digest-pages/{slug} → HTMLResponse(html_content, content_type="text/html")
 ```
+
+## Daily pipeline orchestration flow (Phase 4E)
+
+```
+POST /admin/pipeline-runs/run-daily  {run_date, publish_telegram?}
+  (or APScheduler cron at scheduler.daily_time_utc)
+         │
+         ▼
+run_daily_pipeline(db, run_date, trigger_type, publish_telegram, cfg):
+  1. Create PipelineRun(status="running", started_at=now)
+  2. For each step in [ingest, normalize, extract_facts, cluster_event,
+                        assess, assemble_digest, render_digest, publish_telegram]:
+       a. Create PipelineRunStep(step_name, status="running", started_at=now)
+       b. Call step executor; capture details dict
+       c. Update step: status="success", finished_at=now, details_json=details
+       d. On exception: status="failed", error_message=str(e), stop loop
+  3. Update PipelineRun: status="success"/"failed", finished_at=now
+         │
+         ▼
+Return {pipeline_run_id, status, step_results, run_date}
+```
+
+## ADR-013: Embedded APScheduler over external task queue
+
+**Decision:** Use APScheduler `BackgroundScheduler` (threads, v3.x) embedded in FastAPI lifespan. No Celery, Redis, or external broker.
+
+**Reason:** A daily single-job cron does not require distributed infrastructure. APScheduler runs in-process, requires no extra services, and its state lives in memory (acceptable for a single-instance deployment). `max_instances=1` prevents overlapping runs; `misfire_grace_time=3600` handles delayed startup. The scheduler is fully disableable via `scheduler.enabled=false` in YAML config.
+
+**Trade-off:** If the process restarts during a run, the run row will be left in `running` status. This is acceptable at the current scale; a future phase can add a startup reconciler if needed.
+
+## ADR-014: New PipelineRun row per execution (no update-in-place)
+
+**Decision:** Each call to `run_daily_pipeline()` creates a new `PipelineRun` row, even for the same date. Rerunning a date produces a second row.
+
+**Reason:** Update-in-place would lose the history of failed attempts and make it impossible to compare results across reruns. Each row represents a complete, auditable execution record. Stage-level idempotency (via unique constraints in downstream tables) prevents data duplication across reruns.
