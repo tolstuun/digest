@@ -5,16 +5,17 @@ Serves server-rendered HTML pages for operational inspection and manual
 pipeline triggering. No auth (internal tool). No JS/SPA.
 
 Routes:
-  GET  /ui/                            dashboard
-  GET  /ui/sources                     sources list
-  POST /ui/sources/{id}/ingest         trigger ingest, redirect back
-  POST /ui/sources/{id}/normalize      trigger normalize, redirect back
-  GET  /ui/event-clusters              event clusters list
-  POST /ui/event-clusters/{id}/assess  trigger assessment, redirect back
-  GET  /ui/digests                     digest runs list
-  POST /ui/digests/assemble            assemble for a date, redirect back
-  POST /ui/digests/{id}/render         render digest page, redirect back
-  GET  /ui/config                      read-only config view
+  GET  /ui/                                          dashboard
+  GET  /ui/sources                                   sources list
+  POST /ui/sources/{id}/ingest                       trigger ingest, redirect back
+  POST /ui/sources/{id}/normalize                    trigger normalize, redirect back
+  GET  /ui/event-clusters                            event clusters list
+  POST /ui/event-clusters/{id}/assess                trigger assessment, redirect back
+  GET  /ui/digests                                   digest runs list
+  POST /ui/digests/assemble                          assemble for a date, redirect back
+  POST /ui/digests/{id}/render                       render digest page, redirect back
+  POST /ui/digest-pages/{page_id}/publish-telegram   publish to Telegram, redirect back
+  GET  /ui/config                                    read-only config view
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ from app.database import get_db
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
 from app.ingestion.service import ingest_source
 from app.models.digest_page import DigestPage
+from app.models.digest_publication import DigestPublication
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
@@ -43,6 +45,7 @@ from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
+from app.publishing.service import publish_to_telegram
 from app.rendering.service import render_digest_page
 from app.scoring.service import assess_cluster
 
@@ -99,6 +102,7 @@ def ui_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
         "event_clusters": db.query(EventCluster).count(),
         "digest_runs": db.query(DigestRun).count(),
         "digest_pages": db.query(DigestPage).count(),
+        "digest_publications": db.query(DigestPublication).count(),
     }
     recent_errors = (
         db.query(Source)
@@ -250,9 +254,19 @@ def ui_digests(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         p.digest_run_id: p for p in db.query(DigestPage).all()
     }
 
+    # Build publication map: page_id -> latest publication
+    publications: dict[uuid.UUID, DigestPublication] = {
+        pub.digest_page_id: pub
+        for pub in db.query(DigestPublication)
+        .filter_by(channel_type="telegram")
+        .order_by(DigestPublication.published_at.desc())
+        .all()
+    }
+
     rows = []
     for r in runs:
         p = pages.get(r.id)
+        pub = publications.get(p.id) if p else None
         rows.append({
             "id": r.id,
             "digest_date": r.digest_date,
@@ -261,7 +275,10 @@ def ui_digests(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             "total_candidate_clusters": r.total_candidate_clusters,
             "total_included_clusters": r.total_included_clusters,
             "generated_at": r.generated_at,
+            "page_id": p.id if p else None,
             "page_slug": p.slug if p else None,
+            "publication_status": pub.status if pub else None,
+            "publication_at": pub.published_at if pub else None,
         })
 
     return templates.TemplateResponse(
@@ -271,6 +288,7 @@ def ui_digests(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             "active": "digests",
             "runs": rows,
             "today": date.today().isoformat(),
+            "telegram_enabled": settings.telegram.enabled,
             "flash": _flash(request),
         },
     )
@@ -314,6 +332,21 @@ def ui_render_digest(run_id: uuid.UUID, db: Session = Depends(get_db)) -> Redire
     except Exception as exc:  # noqa: BLE001
         logger.exception("UI render failed run=%s", run_id)
         return _redirect("/ui/digests", "err", f"Render failed: {exc}")
+
+
+@router.post("/digest-pages/{page_id}/publish-telegram")
+def ui_publish_telegram(page_id: uuid.UUID, db: Session = Depends(get_db)) -> RedirectResponse:
+    page = db.get(DigestPage, page_id)
+    if page is None:
+        return _redirect("/ui/digests", "err", "Digest page not found")
+    try:
+        pub, created = publish_to_telegram(db, page, settings)
+        msg = f"Published to Telegram ({'new' if created else 'resent'}): message_id={pub.provider_message_id}"
+        logger.info("UI publish-telegram page=%s created=%s", page_id, created)
+        return _redirect("/ui/digests", "ok", msg)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("UI publish-telegram failed page=%s", page_id)
+        return _redirect("/ui/digests", "err", f"Publish failed: {exc}")
 
 
 # ── config ────────────────────────────────────────────────────────────────────

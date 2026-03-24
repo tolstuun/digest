@@ -20,6 +20,7 @@
       <th>Included</th>
       <th>Generated</th>
       <th>Page</th>
+      <th>Telegram</th>
       <th>Actions</th>
     </tr>
   </thead>
@@ -48,9 +49,24 @@
         {% endif %}
       </td>
       <td>
+        {% if row.publication_status == "sent" %}
+          <span class="badge badge-ok">sent</span>
+          <span class="muted" style="font-size:11px">{{ row.publication_at.strftime("%Y-%m-%d %H:%M") if row.publication_at else "" }}</span>
+        {% elif row.publication_status == "failed" %}
+          <span class="badge badge-err">failed</span>
+        {% else %}
+          <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap">
         <form class="inline" method="post" action="/ui/digests/{{ row.id }}/render">
           <button class="btn" type="submit">Render</button>
         </form>
+        {% if row.page_id and telegram_enabled %}
+        <form class="inline" method="post" action="/ui/digest-pages/{{ row.page_id }}/publish-telegram">
+          <button class="btn" type="submit">Publish TG</button>
+        </form>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

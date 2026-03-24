@@ -15,11 +15,13 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │  GET /event-clusters/{id}/assessment                             │
 │  GET /digests/         GET /digests/{id}                         │
 │  GET /digest-pages/    GET /digest-pages/{slug}                  │
+│  GET /digest-publications/  GET /digest-publications/{id}         │
 │  POST /admin/sources/{id}/ingest|normalize                       │
 │  POST /admin/stories/{id}/extract-facts|cluster-event            │
 │  POST /admin/event-clusters/{id}/assess                          │
 │  POST /admin/digests/assemble                                    │
 │  POST /admin/digests/{id}/render                                 │
+│  POST /admin/digest-pages/{id}/publish-telegram                  │
 │  GET|POST /ui/* (server-rendered ops HTML UI)                    │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
@@ -29,7 +31,7 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │                                                                  │
 │  sources    raw_items    stories    story_facts    event_clusters │
 │  event_cluster_assessments  digest_runs  digest_entries          │
-│  digest_pages                                                    │
+│  digest_pages   digest_publications                              │
 │  (planned) entities  sections  job_runs                          │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -44,7 +46,7 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
           → assess ✅ → event_cluster_assessments (rule_score + llm_score → final_score)
           → assemble digest ✅ → digest_runs + digest_entries
           → render HTML ✅ → digest_pages (slug, html_content)
-          → publish Telegram (Phase 4C)
+          → publish Telegram ✅ → digest_publications
 ```
 
 ## Implemented components
@@ -54,7 +56,7 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | Component               | Description                                              |
 |-------------------------|----------------------------------------------------------|
 | `app/main.py`           | FastAPI app; lifespan logging; router registration       |
-| `app/config.py`         | Settings from environment via `pydantic-settings`        |
+| `app/config.py`         | YAML config loader; `APP_CONFIG_PATH` selects file; YAML-only |
 | `app/database.py`       | SQLAlchemy engine, session factory, `Base`, `get_db`     |
 | `app/models/source.py`  | `Source` ORM model                                       |
 | `app/schemas/source.py` | `SourceCreate` / `SourcePatch` / `SourceOut`             |
@@ -144,15 +146,27 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 
 | Component                            | Description                                                                 |
 |--------------------------------------|-----------------------------------------------------------------------------|
-| `app/config.py`                      | YAML config loader: structured sections, env var override chain             |
-| `config/settings.example.yaml`       | Committed template; real `config/settings.yaml` is git-ignored              |
+| `app/config.py`                      | YAML config loader: structured sections; YAML-only, `APP_CONFIG_PATH` selects file |
+| `config/settings.example.yaml`       | Committed template (localhost); real `config/settings.yaml` is git-ignored  |
+| `config/settings.compose.yaml`       | Committed Docker Compose config (db hostname); no secrets                   |
 | `app/routers/ui.py`                  | Server-rendered HTML UI under `/ui/` — Jinja2, no JS, no SPA               |
 | `app/templates/base.html`            | Base layout with nav bar and flash message rendering                        |
 | `app/templates/ui/dashboard.html`    | Counts for all pipeline tables + recent source errors                       |
 | `app/templates/ui/sources.html`      | Sources table with Ingest + Normalize action buttons                        |
 | `app/templates/ui/event_clusters.html` | Clusters table with assessment status, score + Assess button              |
-| `app/templates/ui/digests.html`      | Digest runs table with Assemble form + Render + page link                   |
+| `app/templates/ui/digests.html`      | Digest runs table with Assemble form + Render + Publish TG + page link      |
 | `app/templates/ui/config.html`       | Read-only config view; secrets masked via `mask_secret` Jinja2 filter       |
+
+### Phase 4D — Telegram Publishing
+
+| Component                              | Description                                                               |
+|----------------------------------------|---------------------------------------------------------------------------|
+| `app/models/digest_publication.py`     | `DigestPublication` ORM model: one row per (page, channel, target)        |
+| `app/publishing/telegram.py`           | `build_message_text()` + `send_telegram_message()` — narrow HTTP boundary |
+| `app/publishing/service.py`            | `publish_to_telegram()` — idempotent upsert; YAML config; public URL      |
+| `app/schemas/digest_publication.py`    | `DigestPublicationOut` Pydantic schema                                    |
+| `app/routers/digest_publications.py`   | `GET /digest-publications/`, `GET /digest-publications/{id}`              |
+| `app/routers/admin.py`                 | `POST /admin/digest-pages/{id}/publish-telegram` (extended)               |
 
 ## Database schema (current)
 
@@ -309,6 +323,23 @@ Unique constraint: `(digest_date, section_name)` — one run per date+section.
 | rendered_at    | timestamptz   | when rendering ran                                                     |
 | created_at     | timestamptz   |                                                                        |
 | updated_at     | timestamptz   |                                                                        |
+
+### `digest_publications`
+
+| Column              | Type          | Notes                                                                  |
+|---------------------|---------------|------------------------------------------------------------------------|
+| id                  | UUID PK       |                                                                        |
+| digest_page_id      | UUID FK       | → digest_pages.id CASCADE                                              |
+| channel_type        | varchar(64)   | `telegram` (extensible)                                                |
+| target              | varchar(256)  | Telegram chat_id                                                       |
+| message_text        | text          | full message sent                                                      |
+| provider_message_id | varchar(256)  | Telegram message_id returned by API                                    |
+| status              | varchar(32)   | `sent` / `failed`                                                      |
+| published_at        | timestamptz   | when the message was sent                                              |
+| created_at          | timestamptz   |                                                                        |
+| updated_at          | timestamptz   |                                                                        |
+
+Unique constraint: `(digest_page_id, channel_type, target)` — one publication per channel per page.
 
 ## Normalization flow (Phase 2A)
 

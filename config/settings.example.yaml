@@ -3,8 +3,8 @@
 # Copy this file to config/settings.yaml and fill in real values.
 # config/settings.yaml is git-ignored and must never be committed.
 #
-# Environment variables always override values from this file:
-#   DATABASE_URL, ANTHROPIC_API_KEY, EXTRACTION_MODEL
+# Runtime configuration is YAML-only. No environment variables override values here.
+# The only accepted env var is APP_CONFIG_PATH, which selects which file to load.
 #
 # Default config path: config/settings.yaml
 # Override path:       APP_CONFIG_PATH=/path/to/settings.yaml
