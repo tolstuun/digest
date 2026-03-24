@@ -27,10 +27,10 @@ The system publishes a daily web page and sends a Telegram message with a link t
 
 ## Current repository state
 
-Phase 1 (source registry hardening + ingestion foundation) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
+Phase 2A (normalization foundation) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
 
-Current tables: `sources`, `raw_items`.
-Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `POST /admin/sources/{id}/ingest`.
+Current tables: `sources`, `raw_items`, `stories`.
+Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`.
 
 Deploy uses SSH secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`. The server path is `/opt/security-digest/`.
 

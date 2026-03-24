@@ -4,36 +4,40 @@
 
 Goal: runnable service with database integration and source registry.
 
-- FastAPI application skeleton
-- PostgreSQL integration
-- Health endpoint
-- `sources` table and CRUD API (`GET /sources`, `POST /sources`)
-- Alembic migrations
-- Dockerfile + Docker Compose
-- CI with tests
+- FastAPI application skeleton, PostgreSQL integration, health endpoint
+- `sources` table, `GET /sources/`, `POST /sources/`
+- Alembic migrations, Dockerfile, Docker Compose, CI with tests
 
-## Phase 1 — Source registry hardening + ingestion foundation ✅ (current)
+## Phase 1 — Source registry hardening + ingestion foundation ✅
 
 Goal: extend the source registry for ingestion management and prove the basic ingest path shape.
 
-- Extended `sources` model with ingestion fields: `parser_type`, `poll_frequency_minutes`, `last_polled_at`, `last_success_at`, `last_error`, `section_scope`
-- `GET /sources/{id}` and `PATCH /sources/{id}` endpoints
-- `raw_items` table: raw ingest store with `(source_id, content_hash)` deduplication
-- RSS ingestion module (`app/ingestion/rss.py`): deterministic feedparser-based parsing
-- `ingest_source()` service: fetch → parse → persist new raw items → update source state
-- `POST /admin/sources/{id}/ingest`: manual trigger for one-source ingestion
-- Idempotent: repeated runs skip already-stored items
-- Migrations 0002 (source fields) and 0003 (raw_items table)
+- Extended `sources` model (parser_type, poll_frequency_minutes, last_polled_at, last_success_at, last_error, section_scope)
+- `GET /sources/{id}`, `PATCH /sources/{id}`
+- `raw_items` table with `(source_id, content_hash)` deduplication
+- RSS ingestion module (feedparser-based, deterministic)
+- `ingest_source()` service, `POST /admin/sources/{id}/ingest`
+- Migrations 0002, 0003
 
-## Phase 2 — Normalization and clustering foundation
+## Phase 2A — Normalization foundation ✅ (current)
 
-Goal: turn raw items into structured stories and detect obvious duplicates.
+Goal: turn raw_items into normalized stories using deterministic code only.
 
-- `stories` table (normalized representation of a raw item: title, url, source_id, published_at)
-- Normalization worker: `raw_items` → `stories`
+- `stories` table: id, raw_item_id (unique FK), source_id, title, url, canonical_url, published_at, normalized_at, created_at, updated_at
+- `canonicalize_url()`: lowercase scheme/host, remove fragment, strip UTM/fbclid/gclid params
+- `normalize_raw_item(db, raw_item)`: idempotent, returns (story, created), no LLM
+- `GET /stories/`, `GET /stories/{id}`
+- `POST /admin/sources/{id}/normalize` — normalize all raw_items for a source
+- Migration 0004
+
+## Phase 2B — Story deduplication (planned next)
+
+Goal: detect and group stories covering the same event across different sources.
+
 - `story_clusters` table (groups of related stories)
-- Basic deduplication by URL
-- Source polling config: `last_fetched_at`, scheduled polling loop
+- Deduplication by canonical URL: stories sharing the same canonical_url are clustered
+- Representative story selection per cluster
+- `GET /story-clusters/`
 
 ## Phase 3 — Enrichment and scoring
 
@@ -54,7 +58,6 @@ Goal: assemble and publish the first real digest.
 - Digest assembly worker: select top stories per section
 - HTML page renderer (daily digest web page)
 - Telegram publisher (sends link to the page)
-- Smoke test after publish
 
 ## Future sections
 

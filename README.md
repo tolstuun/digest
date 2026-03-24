@@ -6,26 +6,25 @@ Publishes a daily web page and sends a Telegram message linking to it.
 
 ---
 
-## Current scope (Phase 1 — source registry + ingestion foundation)
+## Current scope
 
-**Phase 0 (bootstrap) — complete:**
-- FastAPI application skeleton
-- PostgreSQL integration
-- `GET /health` — health check endpoint
-- `sources` table — editable source registry
-- `GET /sources/`, `POST /sources/` — source list and create
+**Phase 0 — bootstrap** ✅
+- FastAPI skeleton, PostgreSQL integration, health endpoint
+- `sources` table, `GET /sources/`, `POST /sources/`
 
-**Phase 1 (current) — complete:**
-- `GET /sources/{id}` — fetch source by ID
-- `PATCH /sources/{id}` — partial update (any field)
-- Extended source model with ingestion management fields: `parser_type`, `poll_frequency_minutes`, `last_polled_at`, `last_success_at`, `last_error`, `section_scope`
-- `raw_items` table — raw ingest store with deduplication
-- RSS ingestion: fetch, parse, and persist raw items (feedparser-based, deterministic)
-- `POST /admin/sources/{id}/ingest` — manually trigger one-source ingestion
-- Idempotent ingestion: repeated runs skip already-stored items (by `content_hash`)
-- Source state tracking: `last_polled_at`, `last_success_at`, `last_error` updated on each run
+**Phase 1 — source registry + ingestion foundation** ✅
+- Extended source model (ingestion management fields)
+- `GET /sources/{id}`, `PATCH /sources/{id}`
+- `raw_items` table, RSS ingestion, `POST /admin/sources/{id}/ingest`
 
-**Not yet implemented:** normalization, clustering, enrichment/scoring, digest assembly, publishing.
+**Phase 2A — normalization foundation** ✅ *(current)*
+- `stories` table — one story per raw item
+- Deterministic URL canonicalization (lowercase host/scheme, strip UTM/fbclid/gclid, remove fragment)
+- `normalize_raw_item()` service — idempotent, no LLM
+- `GET /stories/`, `GET /stories/{id}`
+- `POST /admin/sources/{id}/normalize` — normalize all raw items for a source
+
+**Not yet implemented:** clustering/deduplication across stories, LLM enrichment, sections, scoring, digest assembly, publishing.
 
 ---
 
@@ -33,7 +32,7 @@ Publishes a daily web page and sends a Telegram message linking to it.
 
 ### Prerequisites
 
-- Docker and Docker Compose
+Docker and Docker Compose.
 
 ### Start the stack
 
@@ -59,14 +58,13 @@ docker compose run --rm app pytest -v
 Single test:
 
 ```bash
-docker compose run --rm app pytest tests/test_ingestion.py::test_ingest_avoids_duplicates -v
+docker compose run --rm app pytest tests/test_normalization.py::test_normalize_idempotent_no_duplicate_in_db -v
 ```
 
 ### Without Docker (requires local PostgreSQL)
 
 ```bash
-cp .env.example .env
-# Edit DATABASE_URL in .env
+cp .env.example .env   # set DATABASE_URL
 pip install -r requirements-dev.txt
 alembic upgrade head
 pytest -v
@@ -75,64 +73,42 @@ uvicorn app.main:app --reload
 
 ---
 
-## Running ingestion manually
+## Pipeline walkthrough (current)
 
-To manually ingest one source (useful for dev and smoke-testing):
+```
+1. Create a source via POST /sources/
+2. Ingest it:   POST /admin/sources/{id}/ingest
+3. Normalize:   POST /admin/sources/{id}/normalize
+4. Read stories: GET /stories/
+```
+
+### Triggering normalization manually
 
 ```bash
-# Via the admin endpoint (app must be running)
-curl -X POST http://localhost:8000/admin/sources/{source_id}/ingest
+# Normalize all raw items for a source
+curl -X POST http://localhost:8000/admin/sources/{source_id}/normalize
 
-# Or via docker compose
-docker compose run --rm app python -c "
-import os
-from sqlalchemy.orm import Session
-from app.database import engine
-from app.models.source import Source
-from app.ingestion.service import ingest_source
-import uuid
-
-source_id = uuid.UUID('YOUR-SOURCE-UUID')
-with Session(engine) as db:
-    source = db.get(Source, source_id)
-    result = ingest_source(db, source)
-    print(result)
-"
+# Check stories
+curl http://localhost:8000/stories/
 ```
 
 ---
 
-## API
+## API reference
 
-| Method | Path                             | Description                          |
-|--------|----------------------------------|--------------------------------------|
-| GET    | /health                          | Health check                         |
-| GET    | /sources/                        | List all sources                     |
-| GET    | /sources/{id}                    | Get source by ID                     |
-| POST   | /sources/                        | Create a source                      |
-| PATCH  | /sources/{id}                    | Partial update a source              |
-| POST   | /admin/sources/{id}/ingest       | Trigger ingestion for one source     |
+| Method | Path                               | Description                              |
+|--------|------------------------------------|------------------------------------------|
+| GET    | /health                            | Health check                             |
+| GET    | /sources/                          | List all sources                         |
+| GET    | /sources/{id}                      | Get source by ID                         |
+| POST   | /sources/                          | Create a source                          |
+| PATCH  | /sources/{id}                      | Partial update a source                  |
+| GET    | /stories/                          | List all stories                         |
+| GET    | /stories/{id}                      | Get story by ID                          |
+| POST   | /admin/sources/{id}/ingest         | Trigger RSS ingestion for one source     |
+| POST   | /admin/sources/{id}/normalize      | Normalize all raw items for one source   |
 
 Full interactive docs: http://localhost:8000/docs
-
-### Source fields
-
-| Field                   | Type                                                  | Required | Default |
-|-------------------------|-------------------------------------------------------|----------|---------|
-| name                    | string                                                | yes      |         |
-| type                    | `rss` \| `api` \| `html` \| `manual` \| `newsletter` | yes      |         |
-| url                     | string                                                | no       | null    |
-| enabled                 | boolean                                               | no       | true    |
-| tags                    | list[string]                                          | no       | null    |
-| language                | string (e.g. `en`)                                    | no       | null    |
-| geography               | string (e.g. `us`)                                    | no       | null    |
-| priority                | integer                                               | no       | 0       |
-| notes                   | string                                                | no       | null    |
-| parser_type             | string (e.g. `feedparser`)                            | no       | null    |
-| poll_frequency_minutes  | integer                                               | no       | null    |
-| section_scope           | list[string]                                          | no       | null    |
-
-Read-only fields (set by ingestion): `last_polled_at`, `last_success_at`, `last_error`.
 
 ---
 
@@ -140,31 +116,39 @@ Read-only fields (set by ingestion): `last_polled_at`, `last_success_at`, `last_
 
 ```
 app/
-  config.py             settings (DATABASE_URL via env)
-  database.py           SQLAlchemy engine, session, Base
-  main.py               FastAPI app, router registration, startup logging
+  config.py               settings (DATABASE_URL via env)
+  database.py             SQLAlchemy engine, session, Base
+  main.py                 FastAPI app, router registration
   models/
-    source.py           Source ORM model
-    raw_item.py         RawItem ORM model (raw ingest store)
+    source.py             Source ORM model
+    raw_item.py           RawItem ORM model
+    story.py              Story ORM model
   schemas/
-    source.py           SourceCreate / SourcePatch / SourceOut
+    source.py             SourceCreate / SourcePatch / SourceOut
+    story.py              StoryOut
   routers/
-    health.py           GET /health
-    sources.py          GET /sources/, GET /sources/{id}, POST, PATCH
-    admin.py            POST /admin/sources/{id}/ingest
+    health.py             GET /health
+    sources.py            GET|POST /sources/, GET|PATCH /sources/{id}
+    stories.py            GET /stories/, GET /stories/{id}
+    admin.py              POST /admin/sources/{id}/ingest|normalize
   ingestion/
-    rss.py              RSS feed fetching and parsing (feedparser, no DB)
-    service.py          ingest_source() — orchestrates fetch + persist + state update
+    rss.py                RSS feed fetch + parse (feedparser, no DB)
+    service.py            ingest_source() — fetch → persist raw items
+  normalization/
+    urls.py               canonicalize_url() — deterministic, no DB, no LLM
+    service.py            normalize_raw_item() — raw_item → story, idempotent
 alembic/
   versions/
     0001_initial_sources.py
     0002_source_ingestion_fields.py
     0003_add_raw_items.py
+    0004_add_stories.py
 tests/
-  conftest.py           session-scoped DB setup, per-test truncation, TestClient
+  conftest.py             session DB setup, per-test truncation, TestClient
   test_health.py
-  test_sources.py       list, create, get by id, patch, validation
-  test_ingestion.py     RSS parsing, raw item persistence, dedup, endpoint
+  test_sources.py
+  test_ingestion.py
+  test_normalization.py
 ```
 
 ---

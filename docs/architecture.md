@@ -5,30 +5,32 @@
 Security Digest is a **modular monolith with a worker-based pipeline**.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    FastAPI Application                       │
-│                                                              │
-│  GET /health    GET /sources    POST /sources                │
-│  GET /sources/{id}   PATCH /sources/{id}                     │
-│  POST /admin/sources/{id}/ingest                             │
-└────────────────────────────┬─────────────────────────────────┘
-                             │
-                             ▼
-┌──────────────────────────────────────────────────────────────┐
-│                      PostgreSQL                              │
-│                                                              │
-│  sources        raw_items                                    │
-│  (planned) stories   story_clusters   entities               │
-│  (planned) sections  digest_runs  digest_entries  job_runs   │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                      FastAPI Application                         │
+│                                                                  │
+│  GET /health                                                     │
+│  GET|POST /sources/    GET|PATCH /sources/{id}                   │
+│  GET /stories/         GET /stories/{id}                         │
+│  POST /admin/sources/{id}/ingest                                 │
+│  POST /admin/sources/{id}/normalize                              │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                         PostgreSQL                               │
+│                                                                  │
+│  sources    raw_items    stories                                 │
+│  (planned) story_clusters  entities  sections                    │
+│  (planned) digest_runs  digest_entries  job_runs                 │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-**Pipeline stages** (Phase 1 implemented, rest planned):
+**Pipeline stages** (✅ = implemented):
 
 ```
-[sources] → ingest (✅ Phase 1) → raw_items
-          → normalize (Phase 2) → stories
-          → cluster (Phase 2) → story_clusters
+[sources] → ingest ✅ → raw_items
+          → normalize ✅ → stories
+          → cluster (Phase 2B) → story_clusters
           → enrich (Phase 3) → entities + scores
           → assign to sections (Phase 3)
           → assemble digest_run (Phase 4)
@@ -36,11 +38,9 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
           → publish Telegram (Phase 4)
 ```
 
-Each stage is an independent, retryable entrypoint.
-
 ## Implemented components
 
-### Phase 0
+### Phase 0 — Bootstrap
 
 | Component               | Description                                              |
 |-------------------------|----------------------------------------------------------|
@@ -48,136 +48,157 @@ Each stage is an independent, retryable entrypoint.
 | `app/config.py`         | Settings from environment via `pydantic-settings`        |
 | `app/database.py`       | SQLAlchemy engine, session factory, `Base`, `get_db`     |
 | `app/models/source.py`  | `Source` ORM model                                       |
-| `app/schemas/source.py` | `SourceCreate` / `SourcePatch` / `SourceOut` Pydantic v2 |
+| `app/schemas/source.py` | `SourceCreate` / `SourcePatch` / `SourceOut`             |
 | `app/routers/health.py` | `GET /health`                                            |
-| `app/routers/sources.py`| `GET /sources/`, `GET /sources/{id}`, `POST`, `PATCH`    |
-| `alembic/`              | Migration runner; reads `DATABASE_URL` from env          |
+| `app/routers/sources.py`| `GET|POST /sources/`, `GET|PATCH /sources/{id}`          |
 
-### Phase 1
+### Phase 1 — Ingestion
 
 | Component                  | Description                                              |
 |----------------------------|----------------------------------------------------------|
-| `app/models/raw_item.py`   | `RawItem` model: raw ingest store with dedup constraint  |
+| `app/models/raw_item.py`   | `RawItem` model: raw ingest store, dedup constraint      |
 | `app/ingestion/rss.py`     | Pure RSS/Atom parsing via feedparser; no DB, no LLM      |
-| `app/ingestion/service.py` | `ingest_source(db, source)` — orchestrates ingest flow   |
-| `app/routers/admin.py`     | `POST /admin/sources/{id}/ingest` — manual trigger       |
+| `app/ingestion/service.py` | `ingest_source()` — fetch → persist raw items → state   |
+| `app/routers/admin.py`     | `POST /admin/sources/{id}/ingest`                        |
+
+### Phase 2A — Normalization
+
+| Component                      | Description                                          |
+|--------------------------------|------------------------------------------------------|
+| `app/models/story.py`          | `Story` ORM model: normalized form of a raw item     |
+| `app/schemas/story.py`         | `StoryOut` Pydantic schema                           |
+| `app/normalization/urls.py`    | `canonicalize_url()` — pure function, no DB, no LLM  |
+| `app/normalization/service.py` | `normalize_raw_item()` — idempotent, returns (story, created) |
+| `app/routers/stories.py`       | `GET /stories/`, `GET /stories/{id}`                 |
+| `app/routers/admin.py`         | `POST /admin/sources/{id}/normalize` (extended)      |
 
 ## Database schema (current)
 
 ### `sources`
 
-| Column                  | Type          | Notes                                        |
-|-------------------------|---------------|----------------------------------------------|
-| id                      | UUID PK       | auto-generated                               |
-| name                    | varchar(255)  | required                                     |
-| type                    | varchar(50)   | `rss`/`api`/`html`/`manual`/`newsletter`     |
-| url                     | varchar(2048) | nullable                                     |
-| enabled                 | boolean       | default true                                 |
-| tags                    | jsonb         | list of strings                              |
-| language                | varchar(10)   | e.g. `en`                                    |
-| geography               | varchar(100)  | e.g. `us`                                    |
-| priority                | integer       | default 0                                    |
-| notes                   | text          | nullable                                     |
-| parser_type             | varchar(50)   | e.g. `feedparser`; nullable                  |
-| poll_frequency_minutes  | integer       | nullable                                     |
-| last_polled_at          | timestamptz   | set by ingestion; nullable                   |
-| last_success_at         | timestamptz   | set on successful fetch; nullable            |
-| last_error              | text          | last error message; nullable                 |
-| section_scope           | jsonb         | list of section names; nullable              |
-| created_at              | timestamptz   | auto-set                                     |
-| updated_at              | timestamptz   | auto-updated                                 |
+| Column                 | Type          | Notes                                         |
+|------------------------|---------------|-----------------------------------------------|
+| id                     | UUID PK       |                                               |
+| name                   | varchar(255)  | required                                      |
+| type                   | varchar(50)   | `rss`/`api`/`html`/`manual`/`newsletter`      |
+| url                    | varchar(2048) |                                               |
+| enabled                | boolean       | default true                                  |
+| tags                   | jsonb         |                                               |
+| language               | varchar(10)   |                                               |
+| geography              | varchar(100)  |                                               |
+| priority               | integer       | default 0                                     |
+| notes                  | text          |                                               |
+| parser_type            | varchar(50)   |                                               |
+| poll_frequency_minutes | integer       |                                               |
+| last_polled_at         | timestamptz   | set by ingestion                              |
+| last_success_at        | timestamptz   |                                               |
+| last_error             | text          |                                               |
+| section_scope          | jsonb         | list of section names                         |
+| created_at             | timestamptz   |                                               |
+| updated_at             | timestamptz   |                                               |
 
 ### `raw_items`
 
 | Column       | Type          | Notes                                              |
 |--------------|---------------|----------------------------------------------------|
-| id           | UUID PK       | auto-generated                                     |
-| source_id    | UUID FK       | → sources.id (CASCADE DELETE)                      |
-| external_id  | varchar(512)  | RSS GUID or item URL; nullable                     |
-| content_hash | varchar(64)   | SHA-256 hex; unique with source_id for dedup       |
-| title        | varchar(1024) | nullable                                           |
-| url          | varchar(2048) | nullable                                           |
-| published_at | timestamptz   | nullable                                           |
+| id           | UUID PK       |                                                    |
+| source_id    | UUID FK       | → sources.id CASCADE                               |
+| external_id  | varchar(512)  | RSS GUID or item URL                               |
+| content_hash | varchar(64)   | SHA-256; unique with source_id                     |
+| title        | varchar(1024) |                                                    |
+| url          | varchar(2048) |                                                    |
+| published_at | timestamptz   |                                                    |
 | raw_payload  | jsonb         | JSON-safe subset of feedparser entry               |
-| fetched_at   | timestamptz   | when this fetch occurred                           |
-| created_at   | timestamptz   | auto-set                                           |
+| fetched_at   | timestamptz   |                                                    |
+| created_at   | timestamptz   |                                                    |
 
-Unique constraint: `(source_id, content_hash)` — ensures idempotent ingestion.
+### `stories`
 
-## Ingestion flow (Phase 1)
+| Column       | Type          | Notes                                              |
+|--------------|---------------|----------------------------------------------------|
+| id           | UUID PK       |                                                    |
+| raw_item_id  | UUID FK       | → raw_items.id CASCADE; **unique** (1 story/item)  |
+| source_id    | UUID FK       | → sources.id CASCADE                               |
+| title        | varchar(1024) |                                                    |
+| url          | varchar(2048) | as-fetched URL                                     |
+| canonical_url| varchar(2048) | normalized URL (tracking params stripped)          |
+| published_at | timestamptz   |                                                    |
+| normalized_at| timestamptz   | when normalization ran                             |
+| created_at   | timestamptz   |                                                    |
+| updated_at   | timestamptz   |                                                    |
+
+## Normalization flow (Phase 2A)
 
 ```
-POST /admin/sources/{id}/ingest
-       │
-       ▼
-admin router: load Source from DB, call ingest_source()
-       │
-       ▼
-ingest_source(db, source):
-  1. Validate: enabled? type == rss? url set?
-  2. parse_feed(source.url)  ← feedparser, pure function
-  3. For each RawFeedItem:
-       content_hash = SHA-256(external_id or url or title)
-       if (source_id, content_hash) exists → skip
-       else → INSERT into raw_items
-  4. UPDATE source: last_polled_at, last_success_at / last_error
-  5. COMMIT
-       │
-       ▼
-Return: {fetched, new, skipped, error}
+POST /admin/sources/{id}/normalize
+         │
+         ▼
+Load all RawItems for source
+         │
+         ▼  (for each raw_item)
+normalize_raw_item(db, raw_item):
+  1. Check if Story already exists for raw_item_id → return existing (idempotent)
+  2. canonical_url = canonicalize_url(raw_item.url)
+       - lowercase scheme + host
+       - remove #fragment
+       - strip: utm_source, utm_medium, utm_campaign, utm_term,
+                utm_content, fbclid, gclid
+       - all other params and path preserved
+  3. INSERT story (raw_item_id, source_id, title, url, canonical_url,
+                   published_at, normalized_at)
+  4. COMMIT
+         │
+         ▼
+Return {source_id, total, new, skipped}
 ```
 
 ## Key design decisions
 
-### Sources are data, not code
-Source definitions live in the `sources` table. Adding a new source requires a DB insert, not a code change.
+**Sources are data, not code** — source definitions in DB, not hardcoded.
 
-### Deterministic first, LLM second
-Ingestion and deduplication are purely deterministic. `app/ingestion/rss.py` has no LLM usage. LLM is reserved for normalization/enrichment in later phases.
+**Deterministic first, LLM second** — ingestion and normalization are purely deterministic. No LLM touches data until enrichment (Phase 3).
 
-### One story can belong to multiple sections
-The `digest_entries` join table (Phase 4) associates stories to sections per run.
+**One raw_item → at most one story** — enforced by unique constraint on `stories.raw_item_id`. The normalization service also checks before inserting.
 
-### Store raw inputs
-`raw_items` preserves the original payload. Re-processing never requires re-fetching the source.
+**Store raw inputs** — `raw_items` preserves original payloads. Re-normalization never requires re-fetching.
 
-### Pipeline stages are atomic and retryable
-Each stage reads from and writes to the DB. Ingestion can be re-triggered at any time.
+**Pipeline stages are atomic and retryable** — each stage (ingest, normalize) is independently re-triggerable from the admin endpoint.
 
 ## Technology choices
 
 | Concern     | Choice              | Reason                                         |
 |-------------|---------------------|------------------------------------------------|
-| Framework   | FastAPI             | Typed, fast, excellent OpenAPI support         |
-| ORM         | SQLAlchemy 2.x      | Mature, explicit, good migration tooling       |
+| Framework   | FastAPI             | Typed, fast, OpenAPI                           |
+| ORM         | SQLAlchemy 2.x      | Explicit, good migration tooling               |
 | Migrations  | Alembic             | Standard SQLAlchemy companion                  |
 | Database    | PostgreSQL 16       | Reliable, JSONB, future FTS                    |
-| Validation  | Pydantic v2         | Fast, typed, native FastAPI integration        |
-| Config      | pydantic-settings   | Reads from env / .env, typed                   |
-| RSS parsing | feedparser          | Mature, handles RSS/Atom/malformed feeds       |
-| Runtime     | Docker Compose      | Reproducible local and server environments     |
+| Validation  | Pydantic v2         | Fast, typed, FastAPI native                    |
+| Config      | pydantic-settings   | Reads from env / .env                          |
+| RSS parsing | feedparser          | Handles RSS/Atom/malformed feeds               |
+| Runtime     | Docker Compose      | Reproducible local + server environments       |
 | CI/CD       | GitHub Actions      | Simple, repository-native                      |
 
 ## ADR-001: Sync over async for DB access
 
-**Decision:** Use synchronous SQLAlchemy sessions and sync FastAPI route handlers.
-
-**Reason:** The pipeline is I/O-bound at the network level (fetching RSS), not at the DB level. Async SQLAlchemy adds complexity with no measurable benefit at this scale.
+**Decision:** Synchronous SQLAlchemy sessions and sync FastAPI handlers.
+**Reason:** Pipeline is I/O-bound at the network level (fetching RSS), not at DB level. Sync is easier to test and debug.
 
 ## ADR-002: UUID primary keys
 
-**Decision:** UUID (PostgreSQL native) as PK for `sources` and `raw_items`.
+**Decision:** UUID PKs for all tables.
+**Reason:** Rows are referenced across tables and environments. UUIDs avoid collisions during migration or data merges.
 
-**Reason:** Rows may be referenced across tables and environments. UUIDs avoid collisions during migration or merges.
-
-## ADR-003: Content hash for deduplication
+## ADR-003: Content hash for raw item deduplication
 
 **Decision:** Deduplicate `raw_items` by `SHA-256(external_id or url or title)` per source.
+**Reason:** RSS GUIDs are the most reliable dedup key; fallback covers sources without GUIDs. Hash maps cleanly to a DB unique constraint.
 
-**Reason:** RSS GUIDs are the most reliable dedup key. Fallback to URL or title handles sources that omit GUIDs. Hash-based approach avoids storing full content for comparison and maps cleanly to a unique DB constraint.
+## ADR-004: Admin endpoint as ingestion/normalization trigger
 
-## ADR-004: Admin endpoint over CLI for ingestion trigger
+**Decision:** `POST /admin/sources/{id}/ingest` and `POST /admin/sources/{id}/normalize` instead of CLI scripts.
+**Reason:** Easier to test (standard HTTP), consistent with the API pattern, usable from Docker without entering a shell.
 
-**Decision:** Expose ingestion via `POST /admin/sources/{id}/ingest` rather than a CLI script.
+## ADR-005: Conservative URL canonicalization
 
-**Reason:** Easier to test (standard HTTP), easier to use from Docker, consistent with the existing API pattern. The underlying `ingest_source(db, source)` service function is independently callable from any entrypoint (CLI, scheduler) when needed.
+**Decision:** Strip only UTM parameters and click-tracking IDs (fbclid, gclid). No path manipulation. Return original string on error.
+**Reason:** Over-aggressive URL normalization causes false deduplication across genuinely different content. The goal is to make the same article URL comparable across slightly different referral variants, not to parse URLs cleverly.
