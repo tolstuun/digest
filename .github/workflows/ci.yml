@@ -7,18 +7,48 @@ on:
       - main
 
 jobs:
-  ci:
+  test:
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: digest
+          POSTGRES_PASSWORD: digest
+          POSTGRES_DB: digest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U digest -d digest"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://digest:digest@localhost:5432/digest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Basic repo sanity
-        run: |
-          test -f README.md || echo "README.md not present yet"
-          test -d .github/workflows
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest -v
+
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Validate workflow files
-        run: |
-          find .github/workflows -type f -name "*.yml" -o -name "*.yaml" | sort
+        run: find .github/workflows -type f \( -name "*.yml" -o -name "*.yaml" \) | sort
