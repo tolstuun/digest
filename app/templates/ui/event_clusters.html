@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Event Clusters — Digest Ops{% endblock %}
+{% block content %}
+<h1>Event Clusters</h1>
+
+{% if clusters %}
+<table>
+  <thead>
+    <tr>
+      <th>Event Type</th>
+      <th>Stories</th>
+      <th>Representative Story</th>
+      <th>Assessed</th>
+      <th>Section</th>
+      <th>Final Score</th>
+      <th>Include</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in clusters %}
+    <tr>
+      <td>{{ row.event_type or "—" }}</td>
+      <td>{{ row.story_count }}</td>
+      <td class="muted">{{ row.representative_story_id or "—" }}</td>
+      <td>
+        {% if row.assessed %}
+          <span class="badge badge-ok">yes</span>
+        {% else %}
+          <span class="badge badge-warn">no</span>
+        {% endif %}
+      </td>
+      <td class="muted">{{ row.primary_section or "—" }}</td>
+      <td>{{ "%.3f"|format(row.final_score) if row.final_score is not none else "—" }}</td>
+      <td>
+        {% if row.include_in_digest is none %}
+          <span class="muted">—</span>
+        {% elif row.include_in_digest %}
+          <span class="badge badge-yes">yes</span>
+        {% else %}
+          <span class="badge badge-no">no</span>
+        {% endif %}
+      </td>
+      <td>
+        <form class="inline" method="post" action="/ui/event-clusters/{{ row.id }}/assess">
+          <button class="btn" type="submit">Assess</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No event clusters yet.</p>
+{% endif %}
+{% endblock %}

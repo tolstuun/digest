@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Config — Digest Ops{% endblock %}
+{% block content %}
+<h1>Configuration <span class="muted" style="font-size:0.8em;font-weight:400">(read-only)</span></h1>
+
+<p class="muted">Loaded from: <strong>{{ config_path }}</strong>
+  {% if config_file_exists %}
+    <span class="badge badge-ok">file found</span>
+  {% else %}
+    <span class="badge badge-warn">file not found — using defaults + env vars</span>
+  {% endif %}
+</p>
+
+<h2>App</h2>
+<table>
+  <tbody>
+    <tr><th width="220">public_base_url</th><td>{{ cfg.app.public_base_url }}</td></tr>
+  </tbody>
+</table>
+
+<h2>Database</h2>
+<table>
+  <tbody>
+    <tr><th width="220">url</th><td>{{ cfg.database.url | mask_secret }}</td></tr>
+  </tbody>
+</table>
+
+<h2>LLM</h2>
+<table>
+  <tbody>
+    <tr><th width="220">provider</th><td>{{ cfg.llm.provider }}</td></tr>
+    <tr>
+      <th>api_key</th>
+      <td>
+        {% if cfg.llm.api_key %}
+          <span class="badge badge-ok">set</span> {{ cfg.llm.api_key | mask_secret }}
+        {% else %}
+          <span class="badge badge-warn">not set</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr><th>model_extraction</th><td>{{ cfg.llm.model_extraction }}</td></tr>
+    <tr><th>model_scoring</th><td>{{ cfg.llm.model_scoring }}</td></tr>
+  </tbody>
+</table>
+
+<h2>Telegram</h2>
+<table>
+  <tbody>
+    <tr>
+      <th width="220">enabled</th>
+      <td>
+        {% if cfg.telegram.enabled %}
+          <span class="badge badge-yes">yes</span>
+        {% else %}
+          <span class="badge badge-no">no</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>bot_token</th>
+      <td>
+        {% if cfg.telegram.bot_token %}
+          <span class="badge badge-ok">set</span> {{ cfg.telegram.bot_token | mask_secret }}
+        {% else %}
+          <span class="badge badge-warn">not set</span>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>chat_id</th>
+      <td>{{ cfg.telegram.chat_id or "—" }}</td>
+    </tr>
+  </tbody>
+</table>
+{% endblock %}

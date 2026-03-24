@@ -27,10 +27,13 @@ The system publishes a daily web page and sends a Telegram message with a link t
 
 ## Current repository state
 
-Phase 4B (HTML rendering foundation) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
+Phase 4C (ops/admin UI + YAML config) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
 
 Current tables: `sources`, `raw_items`, `stories`, `story_facts`, `event_clusters`, `event_cluster_assessments`, `digest_runs`, `digest_entries`, `digest_pages`.
 Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `GET /stories/{id}/facts`, `GET /event-clusters/`, `GET /event-clusters/{id}`, `GET /event-clusters/{id}/assessment`, `GET /digests/`, `GET /digests/{id}`, `GET /digest-pages/`, `GET /digest-pages/{slug}`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`, `POST /admin/stories/{id}/extract-facts`, `POST /admin/stories/{id}/cluster-event`, `POST /admin/event-clusters/{id}/assess`, `POST /admin/digests/assemble`, `POST /admin/digests/{id}/render`.
+Ops UI (Jinja2 HTML, no JS): `GET /ui/`, `GET /ui/sources`, `GET /ui/event-clusters`, `GET /ui/digests`, `GET /ui/config`. Action POST endpoints under `/ui/` call existing services and redirect.
+
+Config: YAML file at `config/settings.yaml` (default) or `APP_CONFIG_PATH` env var. Sections: `app`, `database`, `llm`, `telegram`. Env vars (`DATABASE_URL`, `ANTHROPIC_API_KEY`) always override YAML. `config/settings.example.yaml` is the committed template.
 
 Two LLM boundaries (both mockable):
 - `app.extraction.llm.extract_facts_llm(story_input)` — fact extraction

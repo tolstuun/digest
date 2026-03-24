@@ -1,0 +1,28 @@
+# Security Digest — example runtime configuration
+#
+# Copy this file to config/settings.yaml and fill in real values.
+# config/settings.yaml is git-ignored and must never be committed.
+#
+# Environment variables always override values from this file:
+#   DATABASE_URL, ANTHROPIC_API_KEY, EXTRACTION_MODEL
+#
+# Default config path: config/settings.yaml
+# Override path:       APP_CONFIG_PATH=/path/to/settings.yaml
+
+app:
+  # Base URL used to build absolute links (e.g. in Telegram messages).
+  public_base_url: "http://localhost:8000"
+
+database:
+  url: "postgresql://digest:digest@localhost:5432/digest"
+
+llm:
+  provider: "anthropic"
+  api_key: ""                               # set your Anthropic API key here
+  model_extraction: "claude-haiku-4-5-20251001"
+  model_scoring: "claude-haiku-4-5-20251001"
+
+telegram:
+  enabled: false
+  bot_token: ""                             # Telegram bot token
+  chat_id: ""                               # target chat or channel ID
