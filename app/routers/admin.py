@@ -4,12 +4,16 @@ Not intended for public exposure — for operational use only.
 """
 import logging
 import uuid
+from datetime import date
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.clustering.service import cluster_story
 from app.database import get_db
+from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
 from app.models.event_cluster import EventCluster
@@ -152,5 +156,40 @@ def trigger_assess_cluster(
         "llm_score": assessment.llm_score,
         "final_score": assessment.final_score,
         "include_in_digest": assessment.include_in_digest,
+        "created": created,
+    }
+
+
+class AssembleDigestRequest(BaseModel):
+    digest_date: date
+    max_entries: Optional[int] = None
+
+
+@router.post("/digests/assemble")
+def trigger_assemble_digest(
+    req: AssembleDigestRequest, db: Session = Depends(get_db)
+) -> dict:
+    """
+    Manually trigger digest assembly for a given date and section (companies_business).
+    Deterministic and idempotent — repeated calls for the same date delete and rebuild the run.
+    Returns: {digest_run_id, digest_date, section_name, total_candidates, total_included, created}.
+    """
+    max_entries = req.max_entries if req.max_entries is not None else MAX_ENTRIES_DEFAULT
+    run, entries, created = assemble_digest(
+        db,
+        digest_date=req.digest_date,
+        section_name=SECTION_NAME,
+        max_entries=max_entries,
+    )
+    logger.info(
+        "assemble-digest date=%s section=%s included=%d created=%s",
+        req.digest_date, SECTION_NAME, len(entries), created,
+    )
+    return {
+        "digest_run_id": str(run.id),
+        "digest_date": str(run.digest_date),
+        "section_name": run.section_name,
+        "total_candidates": run.total_candidate_clusters,
+        "total_included": run.total_included_clusters,
         "created": created,
     }

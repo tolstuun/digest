@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 
-from app.routers import admin, event_clusters, health, sources, stories
+from app.routers import admin, digests, event_clusters, health, sources, stories
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,4 +25,5 @@ app.include_router(health.router)
 app.include_router(sources.router)
 app.include_router(stories.router)
 app.include_router(event_clusters.router)
+app.include_router(digests.router)
 app.include_router(admin.router)

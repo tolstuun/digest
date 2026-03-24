@@ -68,15 +68,29 @@ Goal: add editorial signals to event clusters — rule-based pre-score + LLM edi
 - `POST /admin/event-clusters/{id}/assess`
 - Migration 0007
 
-## Phase 4 — Digest assembly and publishing
+## Phase 4A — Digest assembly foundation ✅ *(current)*
 
-Goal: assemble and publish the first real digest.
+Goal: assemble the first real digest object from assessed clusters; no rendering or publishing yet.
 
-- `digest_runs` table (one row per daily run)
-- `digest_entries` table (selected stories per run, ranked)
-- Digest assembly worker: select top stories per section
+- `digest_runs` table: one row per (digest_date, section_name); unique constraint enforces one run per date+section
+- `digest_entries` table: materialized output entries with display fields copied at assembly time
+- `assemble_digest()` service: fully deterministic, no LLM; selects assessed clusters, filters, sorts, limits
+- Candidate selection: only clusters with assessment + `include_in_digest=True` + `primary_section=companies_business`
+- Date assignment: representative story `published_at` if available; fallback to `event_cluster.created_at`
+- Idempotent policy: delete-and-rebuild — repeated calls for same (date, section) delete old run and rebuild
+- `GET /digests/`, `GET /digests/{id}` (entries in rank order)
+- `POST /admin/digests/assemble` — accepts `{digest_date, max_entries?}`
+- Migration 0008
+
+**Intentionally not in this phase:** HTML rendering, Telegram publishing, schedulers, multi-section orchestration.
+
+## Phase 4B — Digest rendering and publishing (planned)
+
+Goal: render and publish the assembled digest.
+
 - HTML page renderer (daily digest web page)
 - Telegram publisher (sends link to the page)
+- `digest_runs.status` transitions: assembled → rendered → published
 
 ## Future sections
 
