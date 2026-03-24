@@ -10,17 +10,18 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │                                                                  │
 │  GET /health                                                     │
 │  GET|POST /sources/    GET|PATCH /sources/{id}                   │
-│  GET /stories/         GET /stories/{id}                         │
-│  POST /admin/sources/{id}/ingest                                 │
-│  POST /admin/sources/{id}/normalize                              │
+│  GET /stories/         GET /stories/{id}   GET /stories/{id}/facts│
+│  GET /event-clusters/  GET /event-clusters/{id}                  │
+│  POST /admin/sources/{id}/ingest|normalize                       │
+│  POST /admin/stories/{id}/extract-facts|cluster-event            │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                         PostgreSQL                               │
 │                                                                  │
-│  sources    raw_items    stories                                 │
-│  (planned) story_clusters  entities  sections                    │
+│  sources    raw_items    stories    story_facts    event_clusters │
+│  (planned) entities  sections  digest_runs  digest_entries       │
 │  (planned) digest_runs  digest_entries  job_runs                 │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -30,9 +31,10 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 ```
 [sources] → ingest ✅ → raw_items
           → normalize ✅ → stories
-          → cluster (Phase 2B) → story_clusters
-          → enrich (Phase 3) → entities + scores
-          → assign to sections (Phase 3)
+          → extract-facts ✅ → story_facts
+          → cluster-event ✅ → event_clusters (stories.event_cluster_id)
+          → enrich (Phase 3B) → entities + scores
+          → assign to sections (Phase 3B)
           → assemble digest_run (Phase 4)
           → render HTML (Phase 4)
           → publish Telegram (Phase 4)
@@ -71,6 +73,29 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | `app/normalization/service.py` | `normalize_raw_item()` — idempotent, returns (story, created) |
 | `app/routers/stories.py`       | `GET /stories/`, `GET /stories/{id}`                 |
 | `app/routers/admin.py`         | `POST /admin/sources/{id}/normalize` (extended)      |
+
+### Phase 2B — LLM Fact Extraction
+
+| Component                       | Description                                                        |
+|---------------------------------|--------------------------------------------------------------------|
+| `app/models/story_facts.py`     | `StoryFacts` ORM model: extracted facts per story                  |
+| `app/extraction/schemas.py`     | `StoryInput` dataclass; `ExtractionResult` with `Literal` event_type |
+| `app/extraction/llm.py`         | `extract_facts_llm()` — single Anthropic tool-use LLM boundary     |
+| `app/extraction/service.py`     | `extract_story_facts()` — idempotent upsert, stores model + output |
+| `app/schemas/story_facts.py`    | `StoryFactsOut` Pydantic schema                                    |
+| `app/routers/stories.py`        | `GET /stories/{id}/facts` (extended)                               |
+| `app/routers/admin.py`          | `POST /admin/stories/{id}/extract-facts` (extended)                |
+
+### Phase 3A — Event Clustering
+
+| Component                        | Description                                                       |
+|----------------------------------|-------------------------------------------------------------------|
+| `app/models/event_cluster.py`    | `EventCluster` ORM model: one cluster per unique event key        |
+| `app/clustering/rules.py`        | `build_cluster_key()` — pure function; deterministic; no LLM      |
+| `app/clustering/service.py`      | `cluster_story()` — idempotent assign/create; first=representative |
+| `app/schemas/event_cluster.py`   | `EventClusterOut` Pydantic schema (incl. story_count, story_ids)  |
+| `app/routers/event_clusters.py`  | `GET /event-clusters/`, `GET /event-clusters/{id}`                |
+| `app/routers/admin.py`           | `POST /admin/stories/{id}/cluster-event` (extended)               |
 
 ## Database schema (current)
 
@@ -114,18 +139,53 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 
 ### `stories`
 
-| Column       | Type          | Notes                                              |
-|--------------|---------------|----------------------------------------------------|
-| id           | UUID PK       |                                                    |
-| raw_item_id  | UUID FK       | → raw_items.id CASCADE; **unique** (1 story/item)  |
-| source_id    | UUID FK       | → sources.id CASCADE                               |
-| title        | varchar(1024) |                                                    |
-| url          | varchar(2048) | as-fetched URL                                     |
-| canonical_url| varchar(2048) | normalized URL (tracking params stripped)          |
-| published_at | timestamptz   |                                                    |
-| normalized_at| timestamptz   | when normalization ran                             |
-| created_at   | timestamptz   |                                                    |
-| updated_at   | timestamptz   |                                                    |
+| Column            | Type          | Notes                                              |
+|-------------------|---------------|----------------------------------------------------|
+| id                | UUID PK       |                                                    |
+| raw_item_id       | UUID FK       | → raw_items.id CASCADE; **unique** (1 story/item)  |
+| source_id         | UUID FK       | → sources.id CASCADE                               |
+| event_cluster_id  | UUID FK       | → event_clusters.id SET NULL; nullable             |
+| title             | varchar(1024) |                                                    |
+| url               | varchar(2048) | as-fetched URL                                     |
+| canonical_url     | varchar(2048) | normalized URL (tracking params stripped)          |
+| published_at      | timestamptz   |                                                    |
+| normalized_at     | timestamptz   | when normalization ran                             |
+| created_at        | timestamptz   |                                                    |
+| updated_at        | timestamptz   |                                                    |
+
+### `story_facts`
+
+| Column                 | Type          | Notes                                         |
+|------------------------|---------------|-----------------------------------------------|
+| id                     | UUID PK       |                                               |
+| story_id               | UUID FK       | → stories.id CASCADE; **unique** (1/story)    |
+| model_name             | varchar(256)  | LLM model used for extraction                 |
+| raw_model_output       | jsonb         | full structured output from LLM               |
+| extraction_confidence  | float         | 0.0–1.0                                       |
+| extracted_at           | timestamptz   |                                               |
+| source_language        | varchar(16)   | ISO 639-1                                     |
+| event_type             | varchar(64)   | one of 11 typed values                        |
+| company_names          | jsonb         | list of strings                               |
+| person_names           | jsonb         |                                               |
+| product_names          | jsonb         |                                               |
+| geography_names        | jsonb         |                                               |
+| amount_text            | varchar(256)  |                                               |
+| currency               | varchar(16)   |                                               |
+| canonical_summary_en   | varchar(2048) |                                               |
+| canonical_summary_ru   | varchar(2048) |                                               |
+| created_at             | timestamptz   |                                               |
+| updated_at             | timestamptz   |                                               |
+
+### `event_clusters`
+
+| Column                  | Type          | Notes                                        |
+|-------------------------|---------------|----------------------------------------------|
+| id                      | UUID PK       |                                              |
+| cluster_key             | varchar(512)  | unique; deterministic from facts             |
+| event_type              | varchar(64)   |                                              |
+| representative_story_id | UUID          | first story assigned; not FK-constrained     |
+| created_at              | timestamptz   |                                              |
+| updated_at              | timestamptz   |                                              |
 
 ## Normalization flow (Phase 2A)
 
@@ -162,7 +222,11 @@ Return {source_id, total, new, skipped}
 
 **Store raw inputs** — `raw_items` preserves original payloads. Re-normalization never requires re-fetching.
 
-**Pipeline stages are atomic and retryable** — each stage (ingest, normalize) is independently re-triggerable from the admin endpoint.
+**Pipeline stages are atomic and retryable** — each stage (ingest, normalize, extract-facts, cluster-event) is independently re-triggerable from the admin endpoint.
+
+**One story → at most one event cluster** — enforced by `stories.event_cluster_id` (nullable FK). The clustering service checks before creating a new cluster.
+
+**Deterministic clustering before fuzzy matching** — Phase 3A uses only exact key matching (lowercased, sorted company names + event type + amount + currency). Fuzzy/semantic matching is explicitly deferred.
 
 ## Technology choices
 
@@ -202,3 +266,13 @@ Return {source_id, total, new, skipped}
 
 **Decision:** Strip only UTM parameters and click-tracking IDs (fbclid, gclid). No path manipulation. Return original string on error.
 **Reason:** Over-aggressive URL normalization causes false deduplication across genuinely different content. The goal is to make the same article URL comparable across slightly different referral variants, not to parse URLs cleverly.
+
+## ADR-006: Deterministic cluster key from structured facts
+
+**Decision:** Cluster key = `"{event_type}:{sorted_lowercased_companies}[:{amount_text}][:{currency}]"`. No fuzzy matching, no LLM, no NLP.
+**Reason:** Fuzzy matching introduces false positives (two unrelated funding rounds at the same company in the same period). Starting conservative (exact match) makes the clustering behavior fully predictable, testable, and auditable. Fuzzy matching can be layered on in a later phase once the pipeline is proven.
+
+## ADR-007: representative_story_id is not a FK constraint
+
+**Decision:** `event_clusters.representative_story_id` stores a UUID but is not declared as a FK to `stories.id`.
+**Reason:** Adding a FK here creates a circular dependency (`stories → event_clusters → stories`), which complicates migrations and the SQLAlchemy metadata dependency graph. The representative story should be treated as a soft reference — if the story is deleted, the cluster remains valid. Application code must handle a missing representative gracefully.

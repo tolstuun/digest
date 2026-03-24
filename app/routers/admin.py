@@ -8,12 +8,14 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.clustering.service import cluster_story
 from app.database import get_db
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
 from app.models.raw_item import RawItem
 from app.models.source import Source
 from app.models.story import Story
+from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
 from app.schemas.story_facts import StoryFactsOut
 
@@ -88,5 +90,36 @@ def trigger_extract_facts(story_id: uuid.UUID, db: Session = Depends(get_db)) ->
     return {
         "story_id": str(facts.story_id),
         "event_type": facts.event_type,
+        "created": created,
+    }
+
+
+@router.post("/stories/{story_id}/cluster-event")
+def trigger_cluster_event(story_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    """
+    Assign one story to an event cluster based on its extracted facts.
+    Deterministic and idempotent — no LLM.
+    Returns: {story_id, clustered, cluster_id?, created?}.
+    """
+    story = db.get(Story, story_id)
+    if story is None:
+        raise HTTPException(status_code=404, detail="Story not found")
+
+    facts = db.query(StoryFacts).filter_by(story_id=story_id).first()
+    if facts is None:
+        raise HTTPException(status_code=400, detail="Story has no extracted facts; run extract-facts first")
+
+    cluster, created = cluster_story(db, story, facts)
+    if cluster is None:
+        logger.info("cluster-event story=%s — not clustered (insufficient facts)", story_id)
+        return {"story_id": str(story_id), "clustered": False}
+
+    logger.info(
+        "cluster-event story=%s cluster=%s created=%s", story_id, cluster.id, created
+    )
+    return {
+        "story_id": str(story_id),
+        "clustered": True,
+        "cluster_id": str(cluster.id),
         "created": created,
     }

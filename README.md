@@ -24,14 +24,21 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /stories/`, `GET /stories/{id}`
 - `POST /admin/sources/{id}/normalize` — normalize all raw items for a source
 
-**Phase 2B — LLM fact extraction** ✅ *(current)*
+**Phase 2B — LLM fact extraction** ✅
 - `story_facts` table — one row per story, upsert on re-extraction
 - `ExtractionResult` schema — typed event_type (11 values), confidence bounds
 - Anthropic tool-use for structured JSON output (`claude-haiku-4-5-20251001`)
 - `extract_story_facts()` service — idempotent upsert, stores model name + raw output
 - `GET /stories/{id}/facts`, `POST /admin/stories/{id}/extract-facts`
 
-**Not yet implemented:** clustering/deduplication across stories, sections, scoring, digest assembly, publishing.
+**Phase 3A — Event clustering** ✅ *(current)*
+- `event_clusters` table — one cluster per unique event (keyed by type + companies + amount + currency)
+- `stories.event_cluster_id` — nullable FK; one story belongs to at most one cluster
+- `build_cluster_key()` — pure deterministic function, no LLM, no fuzzy matching
+- `cluster_story()` service — idempotent; creates or joins cluster; first story becomes representative
+- `GET /event-clusters/`, `GET /event-clusters/{id}`, `POST /admin/stories/{id}/cluster-event`
+
+**Not yet implemented:** sections, scoring, digest assembly, publishing, fuzzy/semantic clustering.
 
 ---
 
@@ -113,9 +120,12 @@ curl http://localhost:8000/stories/
 | GET    | /stories/                          | List all stories                         |
 | GET    | /stories/{id}                      | Get story by ID                          |
 | GET    | /stories/{id}/facts                | Get extracted facts for a story          |
+| GET    | /event-clusters/                   | List all event clusters                  |
+| GET    | /event-clusters/{id}               | Get event cluster detail + story ids     |
 | POST   | /admin/sources/{id}/ingest         | Trigger RSS ingestion for one source     |
 | POST   | /admin/sources/{id}/normalize      | Normalize all raw items for one source   |
 | POST   | /admin/stories/{id}/extract-facts  | Trigger LLM fact extraction for a story  |
+| POST   | /admin/stories/{id}/cluster-event  | Assign story to an event cluster         |
 
 Full interactive docs: http://localhost:8000/docs
 
@@ -150,6 +160,9 @@ app/
     schemas.py            StoryInput dataclass, ExtractionResult Pydantic model
     llm.py                extract_facts_llm() — single Anthropic tool-use boundary
     service.py            extract_story_facts() — LLM call + upsert to story_facts
+  clustering/
+    rules.py              build_cluster_key() — pure deterministic function, no DB, no LLM
+    service.py            cluster_story() — idempotent assign/create cluster
 alembic/
   versions/
     0001_initial_sources.py
@@ -157,6 +170,7 @@ alembic/
     0003_add_raw_items.py
     0004_add_stories.py
     0005_add_story_facts.py
+    0006_add_event_clusters.py
 tests/
   conftest.py             session DB setup, per-test truncation, TestClient
   test_health.py

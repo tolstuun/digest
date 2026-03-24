@@ -19,7 +19,7 @@ Goal: extend the source registry for ingestion management and prove the basic in
 - `ingest_source()` service, `POST /admin/sources/{id}/ingest`
 - Migrations 0002, 0003
 
-## Phase 2A — Normalization foundation ✅ (current)
+## Phase 2A — Normalization foundation ✅
 
 Goal: turn raw_items into normalized stories using deterministic code only.
 
@@ -30,20 +30,36 @@ Goal: turn raw_items into normalized stories using deterministic code only.
 - `POST /admin/sources/{id}/normalize` — normalize all raw_items for a source
 - Migration 0004
 
-## Phase 2B — Story deduplication (planned next)
+## Phase 2B — LLM fact extraction ✅
 
-Goal: detect and group stories covering the same event across different sources.
+Goal: extract structured facts from each story using an LLM.
 
-- `story_clusters` table (groups of related stories)
-- Deduplication by canonical URL: stories sharing the same canonical_url are clustered
-- Representative story selection per cluster
-- `GET /story-clusters/`
+- `story_facts` table: one row per story, upsert on re-extraction
+- `ExtractionResult` schema: typed `event_type` (11 values), confidence bounds
+- Anthropic tool-use (`claude-haiku-4-5-20251001` by default) for structured JSON output
+- `extract_story_facts()` service: idempotent upsert, stores model name + raw output
+- `GET /stories/{id}/facts`, `POST /admin/stories/{id}/extract-facts`
+- Migration 0005
 
-## Phase 3 — Enrichment and scoring
+## Phase 3A — Event clustering ✅ (current)
 
-Goal: add structured facts and editorial signals to stories.
+Goal: group stories describing the same real-world event using extracted structured facts.
 
-- LLM enrichment worker: extract entities, category, canonical summary
+- `event_clusters` table: id, cluster_key (unique), event_type, representative_story_id
+- `stories.event_cluster_id`: nullable FK; one story → at most one cluster
+- `build_cluster_key()`: pure deterministic function — `event_type + sorted(company_names) + amount_text + currency`
+- Stories with `event_type` in (`unknown`, `other`) or no company names are not clustered
+- `cluster_story()`: idempotent; joins existing cluster or creates new one; first story becomes representative
+- `GET /event-clusters/`, `GET /event-clusters/{id}`
+- `POST /admin/stories/{id}/cluster-event`
+- Migration 0006
+
+**Intentionally not in this phase:** fuzzy/semantic matching, NLP, LLM-assisted clustering, publication date proximity, scoring.
+
+## Phase 3B — Enrichment and scoring (planned)
+
+Goal: add editorial signals to stories and clusters.
+
 - `entities` table (companies, people, events)
 - `sections` table (configurable digest sections)
 - Story-to-section relevance scoring (LLM-assisted)
