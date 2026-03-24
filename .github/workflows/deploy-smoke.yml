@@ -20,20 +20,20 @@ jobs:
 
       - name: Write compose file and start smoke container
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} '
-            mkdir -p /opt/security-digest
-            cat > /opt/security-digest/compose.yaml <<'"'"'EOF'"'"'
-            services:
-              web:
-                image: nginx:alpine
-                container_name: security-digest-smoke
-                restart: unless-stopped
-                ports:
-                  - "8080:80"
-            EOF
-            docker compose -f /opt/security-digest/compose.yaml up -d
-            docker ps
-          '
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} <<'SSH'
+          mkdir -p /opt/security-digest
+          cat > /opt/security-digest/compose.yaml <<'YAML'
+          services:
+            web:
+              image: nginx:alpine
+              container_name: security-digest-smoke
+              restart: unless-stopped
+              ports:
+                - "8080:80"
+          YAML
+          docker compose -f /opt/security-digest/compose.yaml up -d
+          docker ps
+          SSH
 
       - name: Smoke test
         run: |
