@@ -345,23 +345,40 @@ If a task is too large, break it into the smallest end-to-end shippable incremen
 
 ## GitHub automation rules
 
-For every completed task:
+### Before starting any implementation task
+
+Do this every time, without being asked:
+
+1. Re-read CLAUDE.md from disk.
+2. Check out `main`: `git checkout main`
+3. Pull latest: `git pull origin main`
+4. Create a new feature branch: `git checkout -b <branch-name>`
+5. Only then start implementation.
+
+Do not ask the user to run `git checkout`, `git pull`, or branch creation. Do it yourself unless git auth or git state is actually broken.
+
+### After completing a task
 
 1. Never leave finished work only in a branch.
-2. If the current branch is `main`, create a feature branch first.
-3. Run the relevant tests.
-4. Commit the changes.
-5. Push the current branch.
-6. If there is no open PR for the current branch, create one targeting `main`.
-7. Enable auto-merge for that PR with squash merge.
-8. Delete the branch after merge.
-9. Do not ask the user to click anything in GitHub unless authentication or permissions are broken.
+2. Run the relevant tests.
+3. Commit the changes.
+4. Push the current branch.
+5. If there is no open PR for the current branch, create one targeting `main`.
+6. Enable auto-merge for that PR with squash merge.
+7. Delete the branch after merge.
+8. Do not ask the user to click anything in GitHub unless authentication or permissions are broken.
 
 Use GitHub CLI for this flow.
 
 Preferred commands:
 
 ```bash
+# start of task
+git checkout main
+git pull origin main
+git checkout -b feat/<branch-name>
+
+# end of task
 gh pr view >/dev/null 2>&1 || gh pr create --base main --fill
 gh pr merge --auto --squash --delete-branch
 ```
