@@ -27,6 +27,17 @@ class Source(Base):
     geography: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Ingestion management fields
+    parser_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    poll_frequency_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_polled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    section_scope: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )

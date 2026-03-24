@@ -4,7 +4,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 
-from app.routers import health, sources
+from app.routers import admin, health, sources
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,3 +23,4 @@ app = FastAPI(title="Security Digest API", version="0.1.0", lifespan=lifespan)
 
 app.include_router(health.router)
 app.include_router(sources.router)
+app.include_router(admin.router)

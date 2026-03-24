@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 0 — Bootstrap ✅ (current)
+## Phase 0 — Bootstrap ✅
 
 Goal: runnable service with database integration and source registry.
 
@@ -12,33 +12,35 @@ Goal: runnable service with database integration and source registry.
 - Dockerfile + Docker Compose
 - CI with tests
 
-## Phase 1 — Source registry + ingestion foundation
+## Phase 1 — Source registry hardening + ingestion foundation ✅ (current)
 
-Goal: ingest content from real sources and store raw items.
+Goal: extend the source registry for ingestion management and prove the basic ingest path shape.
 
-- Complete source CRUD (PUT, DELETE, GET by ID)
-- `raw_items` table (stores fetched payloads)
-- RSS ingestion worker (fetches enabled RSS sources, writes raw_items)
-- `job_runs` table for pipeline stage observability
-- Idempotent fetch: skip already-ingested items by content hash
-- Source polling config (interval, last_fetched_at)
+- Extended `sources` model with ingestion fields: `parser_type`, `poll_frequency_minutes`, `last_polled_at`, `last_success_at`, `last_error`, `section_scope`
+- `GET /sources/{id}` and `PATCH /sources/{id}` endpoints
+- `raw_items` table: raw ingest store with `(source_id, content_hash)` deduplication
+- RSS ingestion module (`app/ingestion/rss.py`): deterministic feedparser-based parsing
+- `ingest_source()` service: fetch → parse → persist new raw items → update source state
+- `POST /admin/sources/{id}/ingest`: manual trigger for one-source ingestion
+- Idempotent: repeated runs skip already-stored items
+- Migrations 0002 (source fields) and 0003 (raw_items table)
 
 ## Phase 2 — Normalization and clustering foundation
 
-Goal: turn raw items into structured stories and detect duplicates.
+Goal: turn raw items into structured stories and detect obvious duplicates.
 
-- `stories` table (normalized representation of a raw item)
-- Normalization worker: extract title, url, published_at, source_id
+- `stories` table (normalized representation of a raw item: title, url, source_id, published_at)
+- Normalization worker: `raw_items` → `stories`
 - `story_clusters` table (groups of related stories)
-- Basic clustering by URL/title similarity (deterministic, no LLM)
-- Deduplication: merge stories pointing to the same URL
+- Basic deduplication by URL
+- Source polling config: `last_fetched_at`, scheduled polling loop
 
 ## Phase 3 — Enrichment and scoring
 
 Goal: add structured facts and editorial signals to stories.
 
-- LLM enrichment worker: extract entities, category, summary
-- `entities` table (companies, people, events mentioned)
+- LLM enrichment worker: extract entities, category, canonical summary
+- `entities` table (companies, people, events)
 - `sections` table (configurable digest sections)
 - Story-to-section relevance scoring (LLM-assisted)
 - Priority/relevance score per story per section

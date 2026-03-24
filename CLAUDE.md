@@ -27,28 +27,29 @@ The system publishes a daily web page and sends a Telegram message with a link t
 
 ## Current repository state
 
-The application skeleton does not yet exist. Only GitHub Actions workflows are present:
-- `ci.yml` — runs on PRs and pushes to `main`; currently does basic repo sanity checks
-- `deploy-smoke.yml` — manual trigger; SSHs to the server, writes a compose file, starts an nginx smoke container, and curls it
-- `test-deploy-ssh.yml` — manual trigger; verifies SSH connectivity to the deploy server
+Phase 1 (source registry hardening + ingestion foundation) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
+
+Current tables: `sources`, `raw_items`.
+Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `POST /admin/sources/{id}/ingest`.
 
 Deploy uses SSH secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`. The server path is `/opt/security-digest/`.
-
-Commands below will be populated once the application skeleton is in place.
 
 ---
 
 ## Commands
 
-> To be added once the FastAPI app, Docker setup, and test runner are scaffolded.
-
-Expected commands once implemented:
 ```bash
-# Local dev
-docker compose up            # start app + postgres
-docker compose run --rm app pytest                  # run all tests
-docker compose run --rm app pytest tests/path/to/test_foo.py::test_name  # run single test
+# Local dev (Docker)
+docker compose up --build              # start app + postgres
 docker compose run --rm app alembic upgrade head    # apply migrations
+docker compose run --rm app pytest -v               # run all tests
+docker compose run --rm app pytest tests/test_ingestion.py::test_ingest_avoids_duplicates -v
+
+# Without Docker (requires local PostgreSQL, DATABASE_URL set)
+pip install -r requirements-dev.txt
+alembic upgrade head
+pytest -v
+uvicorn app.main:app --reload
 ```
 
 ---
@@ -341,3 +342,26 @@ When unsure, choose the option that is:
 - less magical
 
 If a task is too large, break it into the smallest end-to-end shippable increment and implement that.
+
+## GitHub automation rules
+
+For every completed task:
+
+1. Never leave finished work only in a branch.
+2. If the current branch is `main`, create a feature branch first.
+3. Run the relevant tests.
+4. Commit the changes.
+5. Push the current branch.
+6. If there is no open PR for the current branch, create one targeting `main`.
+7. Enable auto-merge for that PR with squash merge.
+8. Delete the branch after merge.
+9. Do not ask the user to click anything in GitHub unless authentication or permissions are broken.
+
+Use GitHub CLI for this flow.
+
+Preferred commands:
+
+```bash
+gh pr view >/dev/null 2>&1 || gh pr create --base main --fill
+gh pr merge --auto --squash --delete-branch
+```
