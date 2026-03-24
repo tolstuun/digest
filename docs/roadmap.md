@@ -101,14 +101,14 @@ Goal: render the assembled digest as a readable HTML page; no publishing yet.
 
 **Intentionally not in this phase:** Telegram publishing, schedulers, CSS framework, JS, multi-section rendering.
 
-## Phase 4C — Ops/admin UI + YAML config ✅ *(current)*
+## Phase 4C — Ops/admin UI + YAML config ✅
 
 Goal: add a simple internal operational web UI and switch runtime config to YAML.
 
 - YAML config loader (`app/config.py`): structured sections — app, database, llm, telegram
-- Config priority: env vars > YAML file > built-in defaults (env vars always win)
+- Config is **YAML-only**: no env var overrides for runtime values; `APP_CONFIG_PATH` selects which file to load
 - Default path: `config/settings.yaml`; override via `APP_CONFIG_PATH` env var
-- `config/settings.example.yaml` — committed template; real file is git-ignored
+- `config/settings.example.yaml` — committed template (localhost); `config/settings.compose.yaml` — committed Docker Compose config
 - Internal ops/admin UI under `/ui/` — Jinja2 templates, no JS, no SPA
   - `/ui/` — dashboard: counts (sources, raw_items, stories, clusters, digest runs/pages) + recent source errors
   - `/ui/sources` — sources table with Ingest + Normalize action buttons
@@ -121,14 +121,22 @@ Goal: add a simple internal operational web UI and switch runtime config to YAML
 
 **Intentionally not in this phase:** Telegram publishing, config editing via UI, auth/roles, schedulers, WebSockets.
 
-## Phase 4D — Telegram publishing (planned)
+## Phase 4D — Telegram publishing ✅ *(current)*
 
-Goal: send a Telegram message linking to the rendered digest page.
+Goal: publish a rendered digest page to Telegram using YAML-only config; persist publication records.
 
-- Telegram Bot API integration
-- `POST /admin/digests/{id}/publish` — trigger publishing
-- Link in Telegram message: `{app.public_base_url}/digest-pages/{slug}`
-- `digest_runs.status` transitions: assembled → rendered → published
+- `digest_publications` table — one row per `(digest_page_id, channel_type, target)`; idempotent upsert on re-publish
+- `app/publishing/telegram.py` — narrow HTTP boundary: `build_message_text()` + `send_telegram_message()` (fully mockable)
+- `app/publishing/service.py` — `publish_to_telegram()`: reads YAML config, builds public URL, sends message, upserts record
+- Public URL: `{app.public_base_url}/digest-pages/{slug}` — deterministic from config + slug
+- Message format: title, date, section name, public URL (plain text)
+- `POST /admin/digest-pages/{id}/publish-telegram` — returns `DigestPublication` JSON; 400 if not enabled
+- `GET /digest-publications/`, `GET /digest-publications/{id}` — read publication records
+- UI: Publish to Telegram button on `/ui/digests` (only shown when `telegram.enabled=true`); publication status column
+- YAML config required: `telegram.enabled=true`, `telegram.bot_token`, `telegram.chat_id`, `app.public_base_url`
+- Migration 0010
+
+**Intentionally not in this phase:** schedulers, multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
 
 ## Future sections
 

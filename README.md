@@ -63,8 +63,8 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /digest-pages/{slug}` — returns rendered HTML with `Content-Type: text/html`
 - `POST /admin/digests/{digest_run_id}/render` — trigger rendering for a run
 
-**Phase 4C — Ops/admin UI + YAML config** ✅ *(current)*
-- YAML config loader with structured sections (app, database, llm, telegram); env vars always override
+**Phase 4C — Ops/admin UI + YAML config** ✅
+- YAML config loader with structured sections (app, database, llm, telegram); YAML-only, no env var overrides
 - Config path: `config/settings.yaml` (default) or `APP_CONFIG_PATH` env var; git-ignored; `config/settings.example.yaml` is the committed template
 - Internal ops UI under `/ui/` — Jinja2 templates, no JS, no SPA
   - Dashboard: pipeline object counts + recent source errors
@@ -73,7 +73,17 @@ Publishes a daily web page and sends a Telegram message linking to it.
   - Digests: table with status, entry counts + Assemble form + Render button + page link
   - Config: read-only config view with secrets masked
 
-**Not yet implemented:** Telegram publishing, schedulers, multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
+**Phase 4D — Telegram publishing** ✅ *(current)*
+- `digest_publications` table — one row per `(digest_page_id, channel_type, target)`; idempotent upsert on re-publish
+- `app/publishing/telegram.py` — narrow HTTP boundary: `build_message_text()` + `send_telegram_message()` (fully mockable)
+- `app/publishing/service.py` — `publish_to_telegram()`: idempotent, reads YAML config, builds public URL, persists result
+- Public URL scheme: `{app.public_base_url}/digest-pages/{slug}`
+- Message: title, date, section name, public URL (plain text)
+- `POST /admin/digest-pages/{id}/publish-telegram` — returns `DigestPublication` JSON
+- `GET /digest-publications/`, `GET /digest-publications/{id}`
+- UI: Publish to Telegram button on digests page (shown when `telegram.enabled=true`); publication status column
+
+**Not yet implemented:** schedulers, multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
 
 ---
 
@@ -147,18 +157,19 @@ uvicorn app.main:app --reload
 ## Pipeline walkthrough (current)
 
 ```
-1. Create a source:  POST /sources/
-2. Ingest:           POST /admin/sources/{id}/ingest
-3. Normalize:        POST /admin/sources/{id}/normalize
-4. Extract facts:    POST /admin/stories/{id}/extract-facts
-5. Cluster:          POST /admin/stories/{id}/cluster-event
-6. Assess:           POST /admin/event-clusters/{id}/assess
-7. Assemble digest:  POST /admin/digests/assemble
-8. Render HTML:      POST /admin/digests/{id}/render
-9. Read page:        GET /digest-pages/{slug}
+1.  Create a source:      POST /sources/
+2.  Ingest:               POST /admin/sources/{id}/ingest
+3.  Normalize:            POST /admin/sources/{id}/normalize
+4.  Extract facts:        POST /admin/stories/{id}/extract-facts
+5.  Cluster:              POST /admin/stories/{id}/cluster-event
+6.  Assess:               POST /admin/event-clusters/{id}/assess
+7.  Assemble digest:      POST /admin/digests/assemble
+8.  Render HTML:          POST /admin/digests/{id}/render
+9.  Read page:            GET /digest-pages/{slug}
+10. Publish to Telegram:  POST /admin/digest-pages/{id}/publish-telegram
 ```
 
-### Triggering digest assembly and rendering manually
+### Triggering digest assembly, rendering, and publishing manually
 
 ```bash
 # Assemble digest for a specific date (companies_business section)
@@ -172,8 +183,11 @@ curl -X POST http://localhost:8000/admin/digests/{digest_run_id}/render
 # Read the rendered HTML page
 curl http://localhost:8000/digest-pages/2026-03-24-companies-business
 
-# List all rendered pages
-curl http://localhost:8000/digest-pages/
+# Publish the page to Telegram (requires telegram.enabled=true in config)
+curl -X POST http://localhost:8000/admin/digest-pages/{digest_page_id}/publish-telegram
+
+# List all publications
+curl http://localhost:8000/digest-publications/
 ```
 
 ---
@@ -203,12 +217,15 @@ curl http://localhost:8000/digest-pages/
 | POST   | /admin/digests/assemble            | Assemble digest for a date               |
 | GET    | /digest-pages/                     | List all rendered digest pages           |
 | GET    | /digest-pages/{slug}               | Get rendered HTML page by slug           |
-| POST   | /admin/digests/{id}/render         | Render HTML page for a digest run        |
-| GET    | /ui/                               | Ops UI — dashboard                       |
-| GET    | /ui/sources                        | Ops UI — sources list + action buttons   |
-| GET    | /ui/event-clusters                 | Ops UI — clusters list + assess button   |
-| GET    | /ui/digests                        | Ops UI — digest runs + assemble/render   |
-| GET    | /ui/config                         | Ops UI — read-only config view           |
+| POST   | /admin/digests/{id}/render                      | Render HTML page for a digest run        |
+| POST   | /admin/digest-pages/{id}/publish-telegram       | Publish digest page to Telegram          |
+| GET    | /digest-publications/                           | List all digest publications             |
+| GET    | /digest-publications/{id}                       | Get digest publication by ID             |
+| GET    | /ui/                                            | Ops UI — dashboard                       |
+| GET    | /ui/sources                                     | Ops UI — sources list + action buttons   |
+| GET    | /ui/event-clusters                              | Ops UI — clusters list + assess button   |
+| GET    | /ui/digests                                     | Ops UI — digest runs + assemble/render/publish |
+| GET    | /ui/config                                      | Ops UI — read-only config view           |
 
 Full interactive docs: http://localhost:8000/docs
 
@@ -218,21 +235,39 @@ Full interactive docs: http://localhost:8000/docs
 
 ```
 app/
-  config.py               YAML config loader (app/database/llm/telegram sections; env vars override)
+  config.py               YAML config loader (app/database/llm/telegram sections; YAML-only)
   database.py             SQLAlchemy engine, session, Base
   main.py                 FastAPI app, router registration
   models/
     source.py             Source ORM model
     raw_item.py           RawItem ORM model
     story.py              Story ORM model
+    story_facts.py        StoryFacts ORM model
+    event_cluster.py      EventCluster ORM model
+    event_cluster_assessment.py  EventClusterAssessment ORM model
+    digest_run.py         DigestRun ORM model
+    digest_entry.py       DigestEntry ORM model
+    digest_page.py        DigestPage ORM model
+    digest_publication.py DigestPublication ORM model
   schemas/
     source.py             SourceCreate / SourcePatch / SourceOut
     story.py              StoryOut
+    story_facts.py        StoryFactsOut
+    digest.py             DigestRunOut / DigestRunDetail / DigestEntryOut
+    digest_page.py        DigestPageOut
+    digest_publication.py DigestPublicationOut
   routers/
     health.py             GET /health
     sources.py            GET|POST /sources/, GET|PATCH /sources/{id}
     stories.py            GET /stories/, GET /stories/{id}
-    admin.py              POST /admin/sources/{id}/ingest|normalize
+    event_clusters.py     GET /event-clusters/, GET /event-clusters/{id}|assessment
+    digests.py            GET /digests/, GET /digests/{id}
+    digest_pages.py       GET /digest-pages/, GET /digest-pages/{slug}
+    digest_publications.py GET /digest-publications/, GET /digest-publications/{id}
+    admin.py              POST /admin/sources/{id}/ingest|normalize, stories/{id}/extract-facts|cluster-event
+                          POST /admin/event-clusters/{id}/assess, /admin/digests/assemble
+                          POST /admin/digests/{id}/render, /admin/digest-pages/{id}/publish-telegram
+    ui.py                 GET|POST /ui/* — server-rendered ops HTML UI
   ingestion/
     rss.py                RSS feed fetch + parse (feedparser, no DB)
     service.py            ingest_source() — fetch → persist raw items
@@ -256,11 +291,15 @@ app/
   rendering/
     html.py               render_digest_html() — pure function, no DB, no LLM
     service.py            render_digest_page() — DB upsert of DigestPage
+  publishing/
+    telegram.py           build_message_text() + send_telegram_message() — narrow HTTP boundary
+    service.py            publish_to_telegram() — idempotent upsert, YAML config, public URL
   templates/
     base.html             base layout with nav bar
     ui/                   ops UI page templates (dashboard, sources, clusters, digests, config)
 config/
-  settings.example.yaml  committed example config (copy to settings.yaml for local use)
+  settings.example.yaml  committed template (copy to settings.yaml for local use)
+  settings.compose.yaml  committed Docker Compose config (db hostname, no secrets)
 alembic/
   versions/
     0001_initial_sources.py
@@ -272,6 +311,7 @@ alembic/
     0007_add_event_cluster_assessments.py
     0008_add_digest_runs_entries.py
     0009_add_digest_pages.py
+    0010_add_digest_publications.py
 tests/
   conftest.py             session DB setup, per-test truncation, TestClient
   test_health.py
@@ -283,6 +323,7 @@ tests/
   test_scoring.py
   test_digest.py
   test_rendering.py
+  test_publishing.py
 ```
 
 ---

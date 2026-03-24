@@ -6,7 +6,7 @@ from sqlalchemy import engine_from_config, pool
 
 # Import Base and all models so Alembic detects them.
 from app.database import Base
-from app.models import digest_entry, digest_page, digest_run, event_cluster, event_cluster_assessment, raw_item, source, story, story_facts  # noqa: F401
+from app.models import digest_entry, digest_page, digest_publication, digest_run, event_cluster, event_cluster_assessment, raw_item, source, story, story_facts  # noqa: F401
 
 config = context.config
 
@@ -17,9 +17,10 @@ target_metadata = Base.metadata
 
 
 def _get_url() -> str:
-    return os.environ.get(
-        "DATABASE_URL", "postgresql://digest:digest@localhost:5432/digest"
-    )
+    # Use YAML-based settings (same source as the app).
+    # APP_CONFIG_PATH selects which file to load.
+    from app.config import settings
+    return settings.database_url
 
 
 def run_migrations_offline() -> None:

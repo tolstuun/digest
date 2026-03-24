@@ -12,10 +12,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.clustering.service import cluster_story
+from app.config import settings
 from app.database import get_db
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
+from app.models.digest_page import DigestPage
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.raw_item import RawItem
@@ -23,7 +25,9 @@ from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
+from app.publishing.service import publish_to_telegram
 from app.rendering.service import render_digest_page
+from app.schemas.digest_publication import DigestPublicationOut
 from app.schemas.story_facts import StoryFactsOut
 from app.scoring.service import assess_cluster
 
@@ -195,6 +199,32 @@ def trigger_assemble_digest(
         "total_included": run.total_included_clusters,
         "created": created,
     }
+
+
+@router.post("/digest-pages/{digest_page_id}/publish-telegram", response_model=DigestPublicationOut)
+def trigger_publish_telegram(
+    digest_page_id: uuid.UUID, db: Session = Depends(get_db)
+) -> DigestPublicationOut:
+    """
+    Publish a rendered digest page to Telegram.
+    Idempotent: repeated calls update the existing record and re-send.
+    Requires telegram.enabled=true and bot_token/chat_id set in config.
+    Returns the DigestPublication record.
+    """
+    page = db.get(DigestPage, digest_page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="Digest page not found")
+
+    try:
+        pub, created = publish_to_telegram(db, page, settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    logger.info(
+        "publish-telegram page=%s status=%s created=%s",
+        digest_page_id, pub.status, created,
+    )
+    return pub
 
 
 @router.post("/digests/{digest_run_id}/render")
