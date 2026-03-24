@@ -27,10 +27,12 @@ The system publishes a daily web page and sends a Telegram message with a link t
 
 ## Current repository state
 
-Phase 2A (normalization foundation) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
+Phase 2B (LLM fact extraction) is complete. The app runs on FastAPI + PostgreSQL with Alembic migrations, Docker Compose, and GitHub Actions CI.
 
-Current tables: `sources`, `raw_items`, `stories`.
-Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`.
+Current tables: `sources`, `raw_items`, `stories`, `story_facts`.
+Current API: `GET /health`, `GET|POST /sources/`, `GET|PATCH /sources/{id}`, `GET /stories/`, `GET /stories/{id}`, `GET /stories/{id}/facts`, `POST /admin/sources/{id}/ingest`, `POST /admin/sources/{id}/normalize`, `POST /admin/stories/{id}/extract-facts`.
+
+LLM extraction uses Anthropic tool-use (`claude-haiku-4-5-20251001` by default). Config via env: `ANTHROPIC_API_KEY`, `EXTRACTION_MODEL`. The single LLM boundary is `app.extraction.llm.extract_facts_llm(story_input)` — all service tests mock at this name.
 
 Deploy uses SSH secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`. The server path is `/opt/security-digest/`.
 
