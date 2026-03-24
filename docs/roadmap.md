@@ -121,7 +121,7 @@ Goal: add a simple internal operational web UI and switch runtime config to YAML
 
 **Intentionally not in this phase:** Telegram publishing, config editing via UI, auth/roles, schedulers, WebSockets.
 
-## Phase 4D — Telegram publishing ✅ *(current)*
+## Phase 4D — Telegram publishing ✅
 
 Goal: publish a rendered digest page to Telegram using YAML-only config; persist publication records.
 
@@ -137,6 +137,26 @@ Goal: publish a rendered digest page to Telegram using YAML-only config; persist
 - Migration 0010
 
 **Intentionally not in this phase:** schedulers, multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
+
+## Phase 4E — Daily scheduler + run orchestration ✅ *(current)*
+
+Goal: turn the manually-triggered pipeline into a daily runnable system with full run/step observability.
+
+- `pipeline_runs` table: id, run_date, trigger_type, status, started_at, finished_at, error_message
+- `pipeline_run_steps` table: id, pipeline_run_id (FK CASCADE), step_name, status, started_at, finished_at, error_message, details_json (JSONB)
+- `run_daily_pipeline(db, run_date, trigger_type, publish_telegram, cfg)` — sequential orchestrator calling all 8 existing services in order; persists one PipelineRunStep row per step
+- Steps: ingest (all sources) → normalize → extract_facts → cluster_event → assess → assemble_digest → render_digest → publish_telegram
+- Rerun policy: always create a new PipelineRun row; stage-level idempotency handles data deduplication
+- Failure policy: hard exception marks step + run "failed", stops execution; soft misses (no data) succeed with empty details
+- `publish_telegram` flag: `None` → use `scheduler.publish_telegram_by_default`; `True`/`False` → explicit override
+- `POST /admin/pipeline-runs/run-daily` — manual trigger: `{run_date, publish_telegram?}`
+- `GET /pipeline-runs/`, `GET /pipeline-runs/{id}` (includes ordered steps)
+- APScheduler `BackgroundScheduler` embedded in FastAPI lifespan: `max_instances=1`, `misfire_grace_time=3600`
+- YAML `scheduler` section: `enabled` (bool), `daily_time_utc` (HH:MM UTC), `publish_telegram_by_default` (bool)
+- UI: `/ui/pipeline-runs` — run table with step detail rows, Run Daily form (date + Telegram checkbox)
+- Migration 0011
+
+**Intentionally not in this phase:** multi-section orchestration, fuzzy/semantic clustering, config editing via UI.
 
 ## Future sections
 

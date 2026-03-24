@@ -26,3 +26,8 @@ telegram:
   enabled: false
   bot_token: ""                             # Telegram bot token
   chat_id: ""                               # target chat or channel ID
+
+scheduler:
+  enabled: false                            # set true to enable daily background runs
+  daily_time_utc: "06:00"                   # HH:MM UTC when daily pipeline fires
+  publish_telegram_by_default: false        # publish to Telegram in scheduled runs

@@ -15,6 +15,8 @@ Routes:
   POST /ui/digests/assemble                          assemble for a date, redirect back
   POST /ui/digests/{id}/render                       render digest page, redirect back
   POST /ui/digest-pages/{page_id}/publish-telegram   publish to Telegram, redirect back
+  GET  /ui/pipeline-runs                             pipeline runs list + step detail
+  POST /ui/pipeline-runs/run-daily                   trigger daily pipeline, redirect back
   GET  /ui/config                                    read-only config view
 """
 from __future__ import annotations
@@ -40,11 +42,14 @@ from app.models.digest_publication import DigestPublication
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
+from app.models.pipeline_run import PipelineRun
+from app.models.pipeline_run_step import PipelineRunStep
 from app.models.raw_item import RawItem
 from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
+from app.orchestration.service import run_daily_pipeline
 from app.publishing.service import publish_to_telegram
 from app.rendering.service import render_digest_page
 from app.scoring.service import assess_cluster
@@ -103,6 +108,7 @@ def ui_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
         "digest_runs": db.query(DigestRun).count(),
         "digest_pages": db.query(DigestPage).count(),
         "digest_publications": db.query(DigestPublication).count(),
+        "pipeline_runs": db.query(PipelineRun).count(),
     }
     recent_errors = (
         db.query(Source)
@@ -347,6 +353,93 @@ def ui_publish_telegram(page_id: uuid.UUID, db: Session = Depends(get_db)) -> Re
     except Exception as exc:  # noqa: BLE001
         logger.exception("UI publish-telegram failed page=%s", page_id)
         return _redirect("/ui/digests", "err", f"Publish failed: {exc}")
+
+
+# ── pipeline runs ─────────────────────────────────────────────────────────────
+
+
+@router.get("/pipeline-runs", response_class=HTMLResponse)
+def ui_pipeline_runs(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    runs = (
+        db.query(PipelineRun)
+        .order_by(PipelineRun.started_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    # Load steps for all runs
+    run_ids = [r.id for r in runs]
+    all_steps: dict[uuid.UUID, list] = {r.id: [] for r in runs}
+    if run_ids:
+        steps = (
+            db.query(PipelineRunStep)
+            .filter(PipelineRunStep.pipeline_run_id.in_(run_ids))
+            .order_by(PipelineRunStep.created_at)
+            .all()
+        )
+        for step in steps:
+            all_steps[step.pipeline_run_id].append(step)
+
+    rows = []
+    for r in runs:
+        rows.append({
+            "id": r.id,
+            "run_date": r.run_date,
+            "trigger_type": r.trigger_type,
+            "status": r.status,
+            "started_at": r.started_at,
+            "finished_at": r.finished_at,
+            "error_message": r.error_message,
+            "steps": all_steps.get(r.id, []),
+        })
+
+    return templates.TemplateResponse(
+        request,
+        "ui/pipeline_runs.html",
+        {
+            "active": "pipeline-runs",
+            "runs": rows,
+            "today": date.today().isoformat(),
+            "telegram_enabled": settings.telegram.enabled,
+            "flash": _flash(request),
+        },
+    )
+
+
+@router.post("/pipeline-runs/run-daily")
+def ui_run_daily_pipeline(
+    run_date: str = Form(...),
+    publish_telegram: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    try:
+        parsed_date = date.fromisoformat(run_date)
+    except ValueError:
+        return _redirect("/ui/pipeline-runs", "err", f"Invalid date: {run_date}")
+
+    # Checkbox sends "1" when checked, absent when unchecked
+    should_publish: Optional[bool] = True if publish_telegram == "1" else False
+
+    try:
+        summary = run_daily_pipeline(
+            db=db,
+            run_date=parsed_date,
+            trigger_type="manual",
+            publish_telegram=should_publish,
+            cfg=settings,
+        )
+        status = summary["status"]
+        failed = summary.get("failed_step")
+        if status == "success":
+            msg = f"Pipeline run for {parsed_date} completed successfully"
+        else:
+            msg = f"Pipeline run for {parsed_date} failed at step: {failed}"
+        level = "ok" if status == "success" else "err"
+        logger.info("UI run-daily date=%s status=%s", parsed_date, status)
+        return _redirect("/ui/pipeline-runs", level, msg)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("UI run-daily failed date=%s", run_date)
+        return _redirect("/ui/pipeline-runs", "err", f"Pipeline failed: {exc}")
 
 
 # ── config ────────────────────────────────────────────────────────────────────

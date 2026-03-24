@@ -27,3 +27,8 @@ telegram:
   enabled: false
   bot_token: ""                             # set in config/settings.yaml
   chat_id: ""
+
+scheduler:
+  enabled: false
+  daily_time_utc: "06:00"
+  publish_telegram_by_default: false

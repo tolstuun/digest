@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Pipeline Runs — Digest Ops{% endblock %}
+{% block content %}
+<div class="section-header">
+  <h1>Pipeline Runs</h1>
+  <form method="post" action="/ui/pipeline-runs/run-daily" style="display:flex;gap:8px;align-items:center">
+    <input type="date" name="run_date" value="{{ today }}" style="padding:4px 8px;font-size:13px;border:1px solid #bbb;border-radius:3px">
+    <label style="font-size:12px;display:flex;align-items:center;gap:4px">
+      <input type="checkbox" name="publish_telegram" value="1" {% if telegram_enabled %}checked{% endif %}>
+      Publish TG
+    </label>
+    <button class="btn btn-primary" type="submit">Run Daily Pipeline</button>
+  </form>
+</div>
+
+{% if runs %}
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Trigger</th>
+      <th>Status</th>
+      <th>Started</th>
+      <th>Duration</th>
+      <th>Steps</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in runs %}
+    <tr>
+      <td>{{ row.run_date }}</td>
+      <td><span class="badge badge-info">{{ row.trigger_type }}</span></td>
+      <td>
+        {% if row.status == "success" %}
+          <span class="badge badge-ok">success</span>
+        {% elif row.status == "failed" %}
+          <span class="badge badge-no">failed</span>
+        {% else %}
+          <span class="badge badge-warn">{{ row.status }}</span>
+        {% endif %}
+      </td>
+      <td class="muted">{{ row.started_at.strftime("%Y-%m-%d %H:%M:%S") if row.started_at else "—" }}</td>
+      <td class="muted">
+        {% if row.started_at and row.finished_at %}
+          {{ ((row.finished_at - row.started_at).total_seconds() | int) }}s
+        {% else %}
+          —
+        {% endif %}
+      </td>
+      <td>
+        {% set success_count = row.steps | selectattr("status", "equalto", "success") | list | length %}
+        {% set failed_count = row.steps | selectattr("status", "equalto", "failed") | list | length %}
+        {% set total = row.steps | length %}
+        <span class="muted">{{ success_count }}/{{ total }}</span>
+        {% if failed_count > 0 %}
+          <span class="badge badge-no">{{ failed_count }} failed</span>
+        {% endif %}
+      </td>
+      <td class="error-cell" title="{{ row.error_message or '' }}">
+        {{ row.error_message or "" }}
+      </td>
+    </tr>
+    {% if row.steps %}
+    <tr>
+      <td colspan="7" style="padding:0 10px 8px 30px;background:#fafafa">
+        <table style="border:none;font-size:12px">
+          <thead>
+            <tr>
+              <th style="background:none;color:#888">Step</th>
+              <th style="background:none;color:#888">Status</th>
+              <th style="background:none;color:#888">Duration</th>
+              <th style="background:none;color:#888">Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for step in row.steps %}
+            <tr>
+              <td>{{ step.step_name }}</td>
+              <td>
+                {% if step.status == "success" %}
+                  <span class="badge badge-ok">✓</span>
+                {% elif step.status == "failed" %}
+                  <span class="badge badge-no">✗</span>
+                {% elif step.status == "skipped" %}
+                  <span class="badge badge-info">skip</span>
+                {% else %}
+                  <span class="badge badge-warn">{{ step.status }}</span>
+                {% endif %}
+              </td>
+              <td class="muted">
+                {% if step.started_at and step.finished_at %}
+                  {{ ((step.finished_at - step.started_at).total_seconds() | int) }}s
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="muted">
+                {% if step.error_message %}
+                  <span style="color:#c00">{{ step.error_message[:120] }}</span>
+                {% elif step.details_json %}
+                  {{ step.details_json }}
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </td>
+    </tr>
+    {% endif %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No pipeline runs yet. Use the Run Daily Pipeline button above.</p>
+{% endif %}
+{% endblock %}
