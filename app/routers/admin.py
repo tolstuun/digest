@@ -9,10 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
 from app.models.raw_item import RawItem
 from app.models.source import Source
+from app.models.story import Story
 from app.normalization.service import normalize_raw_item
+from app.schemas.story_facts import StoryFactsOut
 
 logger = logging.getLogger(__name__)
 
@@ -67,4 +70,23 @@ def trigger_normalize(source_id: uuid.UUID, db: Session = Depends(get_db)) -> di
         "total": len(raw_items),
         "new": new,
         "skipped": skipped,
+    }
+
+
+@router.post("/stories/{story_id}/extract-facts")
+def trigger_extract_facts(story_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    """
+    Manually trigger LLM fact extraction for one story. Idempotent (upsert).
+    Returns: {story_id, event_type, created}.
+    """
+    story = db.get(Story, story_id)
+    if story is None:
+        raise HTTPException(status_code=404, detail="Story not found")
+
+    facts, created = extract_story_facts(db, story)
+    logger.info("Manual extract-facts triggered for story id=%s created=%s", story_id, created)
+    return {
+        "story_id": str(facts.story_id),
+        "event_type": facts.event_type,
+        "created": created,
     }
