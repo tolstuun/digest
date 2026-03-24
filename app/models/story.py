@@ -38,6 +38,12 @@ class Story(Base):
     published_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    event_cluster_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("event_clusters.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     normalized_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
