@@ -12,12 +12,14 @@ from app.clustering.service import cluster_story
 from app.database import get_db
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
+from app.models.event_cluster import EventCluster
 from app.models.raw_item import RawItem
 from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
 from app.schemas.story_facts import StoryFactsOut
+from app.scoring.service import assess_cluster
 
 logger = logging.getLogger(__name__)
 
@@ -121,5 +123,34 @@ def trigger_cluster_event(story_id: uuid.UUID, db: Session = Depends(get_db)) ->
         "story_id": str(story_id),
         "clustered": True,
         "cluster_id": str(cluster.id),
+        "created": created,
+    }
+
+
+@router.post("/event-clusters/{cluster_id}/assess")
+def trigger_assess_cluster(
+    cluster_id: uuid.UUID, db: Session = Depends(get_db)
+) -> dict:
+    """
+    Manually trigger editorial assessment for one event cluster.
+    Runs rule scoring + LLM editorial judgment. Idempotent (upsert).
+    Returns: {cluster_id, primary_section, rule_score, llm_score, final_score, include_in_digest, created}.
+    """
+    cluster = db.get(EventCluster, cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Event cluster not found")
+
+    assessment, created = assess_cluster(db, cluster)
+    logger.info(
+        "assess cluster=%s final_score=%.3f include=%s created=%s",
+        cluster_id, assessment.final_score or 0, assessment.include_in_digest, created,
+    )
+    return {
+        "cluster_id": str(cluster_id),
+        "primary_section": assessment.primary_section,
+        "rule_score": assessment.rule_score,
+        "llm_score": assessment.llm_score,
+        "final_score": assessment.final_score,
+        "include_in_digest": assessment.include_in_digest,
         "created": created,
     }

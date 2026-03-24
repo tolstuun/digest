@@ -12,8 +12,10 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │  GET|POST /sources/    GET|PATCH /sources/{id}                   │
 │  GET /stories/         GET /stories/{id}   GET /stories/{id}/facts│
 │  GET /event-clusters/  GET /event-clusters/{id}                  │
+│  GET /event-clusters/{id}/assessment                             │
 │  POST /admin/sources/{id}/ingest|normalize                       │
 │  POST /admin/stories/{id}/extract-facts|cluster-event            │
+│  POST /admin/event-clusters/{id}/assess                          │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
                                ▼
@@ -21,6 +23,7 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 │                         PostgreSQL                               │
 │                                                                  │
 │  sources    raw_items    stories    story_facts    event_clusters │
+│  event_cluster_assessments                                       │
 │  (planned) entities  sections  digest_runs  digest_entries       │
 │  (planned) digest_runs  digest_entries  job_runs                 │
 └──────────────────────────────────────────────────────────────────┘
@@ -33,8 +36,8 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
           → normalize ✅ → stories
           → extract-facts ✅ → story_facts
           → cluster-event ✅ → event_clusters (stories.event_cluster_id)
-          → enrich (Phase 3B) → entities + scores
-          → assign to sections (Phase 3B)
+          → assess ✅ → event_cluster_assessments (rule_score + llm_score → final_score)
+          → assign to sections (Phase 4)
           → assemble digest_run (Phase 4)
           → render HTML (Phase 4)
           → publish Telegram (Phase 4)
@@ -96,6 +99,19 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | `app/schemas/event_cluster.py`   | `EventClusterOut` Pydantic schema (incl. story_count, story_ids)  |
 | `app/routers/event_clusters.py`  | `GET /event-clusters/`, `GET /event-clusters/{id}`                |
 | `app/routers/admin.py`           | `POST /admin/stories/{id}/cluster-event` (extended)               |
+
+### Phase 3B — Editorial Scoring
+
+| Component                                  | Description                                                           |
+|--------------------------------------------|-----------------------------------------------------------------------|
+| `app/models/event_cluster_assessment.py`   | `EventClusterAssessment` ORM model: one assessment per cluster        |
+| `app/scoring/schemas.py`                   | `ClusterInput` dataclass; `ClusterAssessment` Pydantic model          |
+| `app/scoring/rules.py`                     | `compute_rule_score()` — deterministic pre-score; weights in code     |
+| `app/scoring/llm.py`                       | `assess_cluster_llm()` — single Anthropic tool-use LLM boundary       |
+| `app/scoring/service.py`                   | `assess_cluster()` — combines scores; idempotent upsert               |
+| `app/schemas/event_cluster_assessment.py`  | `EventClusterAssessmentOut` Pydantic schema                           |
+| `app/routers/event_clusters.py`            | `GET /event-clusters/{id}/assessment` (extended)                      |
+| `app/routers/admin.py`                     | `POST /admin/event-clusters/{id}/assess` (extended)                   |
 
 ## Database schema (current)
 
@@ -187,6 +203,26 @@ Security Digest is a **modular monolith with a worker-based pipeline**.
 | created_at              | timestamptz   |                                              |
 | updated_at              | timestamptz   |                                              |
 
+### `event_cluster_assessments`
+
+| Column               | Type          | Notes                                              |
+|----------------------|---------------|----------------------------------------------------|
+| id                   | UUID PK       |                                                    |
+| event_cluster_id     | UUID FK       | → event_clusters.id CASCADE; **unique** (1/cluster)|
+| primary_section      | varchar(64)   | one of 5 section types                             |
+| include_in_digest    | boolean       |                                                    |
+| rule_score           | float         | 0.0–1.0; deterministic pre-score                   |
+| llm_score            | float         | 0.0–1.0; LLM editorial score                       |
+| final_score          | float         | `0.4 * rule_score + 0.6 * llm_score`               |
+| why_it_matters_en    | text          | LLM-generated editorial note (English)             |
+| why_it_matters_ru    | text          | LLM-generated editorial note (Russian)             |
+| editorial_notes      | text          | additional LLM editorial context                   |
+| model_name           | varchar(256)  | LLM model used for assessment                      |
+| raw_model_output     | jsonb         | full structured output from LLM                    |
+| assessed_at          | timestamptz   | when assessment ran                                |
+| created_at           | timestamptz   |                                                    |
+| updated_at           | timestamptz   |                                                    |
+
 ## Normalization flow (Phase 2A)
 
 ```
@@ -227,6 +263,8 @@ Return {source_id, total, new, skipped}
 **One story → at most one event cluster** — enforced by `stories.event_cluster_id` (nullable FK). The clustering service checks before creating a new cluster.
 
 **Deterministic clustering before fuzzy matching** — Phase 3A uses only exact key matching (lowercased, sorted company names + event type + amount + currency). Fuzzy/semantic matching is explicitly deferred.
+
+**Two-stage scoring: rule pre-score + LLM editorial judgment** — Phase 3B computes a deterministic rule score first (event type, coverage, financial details, source priority), then calls the LLM for editorial assessment. The final score weights the LLM score higher (0.6) because it captures contextual editorial relevance that rules cannot. The weights are explicit in code, not hidden in prompts.
 
 ## Technology choices
 
@@ -276,3 +314,37 @@ Return {source_id, total, new, skipped}
 
 **Decision:** `event_clusters.representative_story_id` stores a UUID but is not declared as a FK to `stories.id`.
 **Reason:** Adding a FK here creates a circular dependency (`stories → event_clusters → stories`), which complicates migrations and the SQLAlchemy metadata dependency graph. The representative story should be treated as a soft reference — if the story is deleted, the cluster remains valid. Application code must handle a missing representative gracefully.
+
+## ADR-008: Two-stage scoring with explicit weights in code
+
+**Decision:** `final_score = 0.4 * rule_score + 0.6 * llm_score`. Weights are hardcoded constants in `app/scoring/service.py`, not in prompts.
+**Reason:** Keeping weights explicit in code (not hidden in the LLM prompt) makes the scoring formula auditable, testable, and adjustable without touching prompt text. The LLM receives a higher weight (0.6) because editorial context (geopolitical significance, novelty, audience relevance) cannot be fully captured by deterministic rules. The rule pre-score is still computed first to provide a stable baseline that the LLM score is combined with, not replaced by.
+
+## Scoring flow (Phase 3B)
+
+```
+POST /admin/event-clusters/{id}/assess
+         │
+         ▼
+assess_cluster(db, cluster):
+  1. Load all stories linked to cluster
+  2. Load representative story's facts (for company_names, summaries, etc.)
+  3. Compute max source priority across linked stories
+  4. rule_score = compute_rule_score(event_type, story_count, has_amount,
+                                     has_currency, max_source_priority)
+       weights: event_type_base + coverage_bonus + financial_bonus + priority_bonus
+  5. cluster_input = ClusterInput(cluster_id, event_type, story_count,
+                                   company_names, amount_text, currency,
+                                   canonical_summary_en, canonical_summary_ru,
+                                   representative_title)
+  6. llm_result = assess_cluster_llm(cluster_input)
+       → Anthropic tool-use; returns ClusterAssessment:
+         primary_section, llm_score, include_in_digest,
+         why_it_matters_en, why_it_matters_ru, editorial_notes
+  7. final_score = round(0.4 * rule_score + 0.6 * llm_score, 4)
+  8. Upsert EventClusterAssessment (idempotent)
+         │
+         ▼
+Return {cluster_id, primary_section, rule_score, llm_score, final_score,
+        include_in_digest, created}
+```

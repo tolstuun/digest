@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.event_cluster import EventCluster
+from app.models.event_cluster_assessment import EventClusterAssessment
 from app.models.story import Story
 from app.schemas.event_cluster import EventClusterOut
+from app.schemas.event_cluster_assessment import EventClusterAssessmentOut
 
 logger = logging.getLogger(__name__)
 
@@ -42,3 +44,20 @@ def get_event_cluster(cluster_id: uuid.UUID, db: Session = Depends(get_db)) -> E
     if cluster is None:
         raise HTTPException(status_code=404, detail="Event cluster not found")
     return _build_cluster_out(db, cluster)
+
+
+@router.get("/{cluster_id}/assessment", response_model=EventClusterAssessmentOut)
+def get_cluster_assessment(
+    cluster_id: uuid.UUID, db: Session = Depends(get_db)
+) -> EventClusterAssessment:
+    cluster = db.get(EventCluster, cluster_id)
+    if cluster is None:
+        raise HTTPException(status_code=404, detail="Event cluster not found")
+    assessment = (
+        db.query(EventClusterAssessment).filter_by(event_cluster_id=cluster_id).first()
+    )
+    if assessment is None:
+        raise HTTPException(
+            status_code=404, detail="No assessment found for this cluster"
+        )
+    return assessment
