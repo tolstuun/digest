@@ -452,6 +452,55 @@ Return {source_id, total, new, skipped}
 | RSS parsing | feedparser          | Handles RSS/Atom/malformed feeds               |
 | Runtime     | Docker Compose      | Reproducible local + server environments       |
 | CI/CD       | GitHub Actions      | Simple, repository-native                      |
+| Image registry | GHCR            | Free for public repos; co-located with source  |
+
+## Deployment architecture
+
+```
+GitHub Actions (deploy.yml)
+  │
+  ├─ 1. Build app image
+  ├─ 2. Push to ghcr.io/tolstuun/digest:latest + :<sha>
+  ├─ 3. SCP compose.prod.yaml → server:/opt/security-digest/
+  ├─ 4. SSH: docker compose pull + migrate + up -d
+  └─ 5. SSH: curl /health smoke check
+
+Server: /opt/security-digest/
+  compose.prod.yaml          ← written by deploy workflow
+  config/
+    settings.yaml            ← set up once by operator; NOT in repo
+
+Docker Compose (prod):
+  app   ghcr.io/tolstuun/digest:latest  ← 8000:8000
+  db    postgres:16-alpine               ← internal only, named volume
+```
+
+### Trigger
+
+Deploy fires automatically when the `CI` workflow completes successfully on `main` (via `workflow_run` event). It also runs on manual `workflow_dispatch`. Parallel deploys are blocked by a `concurrency` group.
+
+### Migrations
+
+Migrations run via `docker compose run --rm app alembic upgrade head` inside the deploy step, after the DB is healthy and before `up -d` restarts the app container. Alembic migrations must be additive (no destructive schema changes in a single deploy) for zero-downtime compatibility.
+
+### Rollback
+
+Each deploy tags the image with the commit SHA. To roll back:
+1. Change the image tag in `compose.prod.yaml` to the previous SHA
+2. Run `docker compose pull app && docker compose up -d app` on the server
+
+No Alembic downgrade is triggered automatically — downgrade manually if the new schema is incompatible.
+
+### Compose files comparison
+
+| | `docker-compose.yml` | `compose.prod.yaml` |
+|---|---|---|
+| Image source | Built from local Dockerfile | Pre-built from GHCR |
+| App command | `uvicorn --reload` | `uvicorn` (production) |
+| Code mount | Full repo bind-mount | None |
+| Config | `config/settings.compose.yaml` | Host-mounted `settings.yaml` |
+| DB port | Exposed to host | Internal only |
+| Managed by | Developer | Deploy workflow |
 
 ## ADR-011: YAML-only runtime configuration
 
@@ -644,3 +693,21 @@ Return {pipeline_run_id, status, step_results, run_date}
 **Decision:** Each call to `run_daily_pipeline()` creates a new `PipelineRun` row, even for the same date. Rerunning a date produces a second row.
 
 **Reason:** Update-in-place would lose the history of failed attempts and make it impossible to compare results across reruns. Each row represents a complete, auditable execution record. Stage-level idempotency (via unique constraints in downstream tables) prevents data duplication across reruns.
+
+## ADR-015: Single-server Docker Compose production deploy (no Kubernetes)
+
+**Decision:** Production runs as Docker Compose on a single server. Image is built in GitHub Actions and pushed to GHCR. The server pulls and restarts without cloning the repository.
+
+**Reason:** The workload is a single-process monolith with one PostgreSQL instance. Kubernetes adds orchestration complexity with no benefit at this scale. Docker Compose is sufficient, reproducible, and trivially operable by one person.
+
+**Server-side responsibilities:**
+- `/opt/security-digest/config/settings.yaml` — set up once by the operator; contains all secrets; never committed
+- `compose.prod.yaml` — written by the deploy workflow on every push; the server does not need the git repo
+
+**Trade-off:** Single server with no HA. Acceptable for the current stage. Adding a standby replica or moving to managed Postgres is straightforward when needed.
+
+## ADR-016: Config mounted as host file, not injected as env vars
+
+**Decision:** Production config (`settings.yaml`) lives on the server at `/opt/security-digest/config/settings.yaml` and is bind-mounted read-only into the container. No secrets are passed as Docker environment variables or in `compose.prod.yaml`.
+
+**Reason:** Consistent with the YAML-only config policy (ADR-011). Env vars injected via compose are visible in `docker inspect` output and process environment. A host file with `600` permissions is more appropriate for secrets. The operator places the file once; the deploy workflow never touches it.

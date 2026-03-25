@@ -1,0 +1,50 @@
+# Production Docker Compose for Security Digest.
+#
+# This file is written to the server at /opt/security-digest/compose.prod.yaml
+# by the deploy workflow on every push to main. Do not edit it on the server
+# directly — changes will be overwritten on the next deploy.
+#
+# Prerequisites on the server (set up once, not managed by this file):
+#   /opt/security-digest/config/settings.yaml — runtime config (YAML-only, not in repo)
+#
+# The DB password below must match database.url in settings.yaml.
+# Default credentials (digest/digest) are fine for a single-server setup
+# where postgres is not exposed to the internet.
+#
+# To start manually:
+#   docker compose -f compose.prod.yaml pull
+#   docker compose -f compose.prod.yaml run --rm app alembic upgrade head
+#   docker compose -f compose.prod.yaml up -d
+
+services:
+  app:
+    image: ghcr.io/tolstuun/digest:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      APP_CONFIG_PATH: /app/config/settings.yaml
+    volumes:
+      - /opt/security-digest/config/settings.yaml:/app/config/settings.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: digest
+      POSTGRES_PASSWORD: digest
+      POSTGRES_DB: digest
+    # postgres is intentionally not exposed to the host; app connects via internal network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U digest -d digest"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
