@@ -166,6 +166,79 @@ uvicorn app.main:app --reload
 
 ---
 
+## Production deployment
+
+### How it works
+
+Every push to `main` that passes CI automatically triggers the `Deploy` workflow, which:
+
+1. Builds the app Docker image and pushes it to GitHub Container Registry (GHCR) — tagged `:latest` and `:<commit-sha>`
+2. Copies `compose.prod.yaml` to the server at `/opt/security-digest/compose.prod.yaml`
+3. Logs Docker in to GHCR on the server
+4. Starts the DB (if not running), waits for it to be healthy
+5. Pulls the new app image
+6. Runs `alembic upgrade head` (migrations — idempotent and additive)
+7. Starts/restarts the app with `docker compose up -d --remove-orphans`
+8. Verifies `GET /health` responds successfully
+
+### Server layout
+
+```
+/opt/security-digest/
+  compose.prod.yaml          — written by deploy workflow on every deploy
+  config/
+    settings.yaml            — runtime config; NOT in repo; set up once on the server
+```
+
+`config/settings.yaml` is mounted read-only into the app container at `/app/config/settings.yaml`.
+
+### Server prerequisites (one-time setup)
+
+1. Install Docker and Docker Compose on the server
+2. Create the config directory and settings file:
+   ```bash
+   mkdir -p /opt/security-digest/config
+   cp config/settings.compose.yaml /opt/security-digest/config/settings.yaml
+   # Edit /opt/security-digest/config/settings.yaml:
+   #   - Set llm.api_key (Anthropic key)
+   #   - Set telegram.bot_token and telegram.chat_id if using Telegram
+   #   - Set app.public_base_url to your server's public URL
+   #   - Leave database.url as postgresql://digest:digest@db:5432/digest
+   ```
+3. Add the deploy SSH key to `~/.ssh/authorized_keys`
+4. Add repository secrets in GitHub:
+   - `DEPLOY_SSH_KEY` — private SSH key
+   - `DEPLOY_HOST` — server hostname or IP
+   - `DEPLOY_USER` — SSH user
+
+### Compose files: local dev vs production
+
+| | `docker-compose.yml` | `compose.prod.yaml` |
+|---|---|---|
+| Purpose | Local development | Production server |
+| Image | Built from local `Dockerfile` | Pre-built from GHCR |
+| App command | `uvicorn --reload` | `uvicorn` (no reload) |
+| Code mount | Yes (full repo bind-mount) | No |
+| Config | `config/settings.compose.yaml` (in repo) | `/opt/security-digest/config/settings.yaml` (on server) |
+| DB port | `5432:5432` exposed to host | Not exposed (internal only) |
+| Managed by | Developer | Deploy workflow |
+
+### Rollback
+
+To roll back to a previous version:
+
+```bash
+# On the server — replace <sha> with the commit SHA to roll back to
+ssh user@server \
+  "sed -i 's|:latest|:<sha>|' /opt/security-digest/compose.prod.yaml && \
+   docker compose -f /opt/security-digest/compose.prod.yaml pull app && \
+   docker compose -f /opt/security-digest/compose.prod.yaml up -d app"
+```
+
+GHCR retains tagged images for each merged commit SHA. No re-deploy of new code is required.
+
+---
+
 ## Pipeline walkthrough (current)
 
 ```
@@ -340,6 +413,8 @@ app/
 config/
   settings.example.yaml  committed template (copy to settings.yaml for local use)
   settings.compose.yaml  committed Docker Compose config (db hostname, no secrets)
+docker-compose.yml        local development compose (build from source, --reload, repo bind-mount)
+compose.prod.yaml         production compose (pre-built GHCR image, config mount, no code bind)
 alembic/
   versions/
     0001_initial_sources.py

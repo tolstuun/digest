@@ -52,5 +52,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate workflow files
+      - name: List workflow files
         run: find .github/workflows -type f \( -name "*.yml" -o -name "*.yaml" \) | sort
+
+      - name: Validate prod compose structure
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+
+          with open("compose.prod.yaml") as f:
+              doc = yaml.safe_load(f)
+
+          services = doc.get("services", {})
+          errors = []
+
+          if "app" not in services:
+              errors.append("compose.prod.yaml: missing 'app' service")
+          if "db" not in services:
+              errors.append("compose.prod.yaml: missing 'db' service")
+
+          app = services.get("app", {})
+          if not app.get("image"):
+              errors.append("compose.prod.yaml: app.image must be set (not built from context)")
+          if "build" in app:
+              errors.append("compose.prod.yaml: app must not have a 'build' key — use pre-built image")
+          if app.get("command", "").find("--reload") != -1:
+              errors.append("compose.prod.yaml: app command must not use --reload")
+          vols = [str(v) for v in app.get("volumes", [])]
+          if any(v.startswith(".:/") or v.startswith(".\\") for v in vols):
+              errors.append("compose.prod.yaml: app must not bind-mount the repo (no .:/app)")
+
+          db = services.get("db", {})
+          if "ports" in db:
+              errors.append("compose.prod.yaml: db must not expose ports to the host in production")
+
+          if not doc.get("volumes"):
+              errors.append("compose.prod.yaml: missing named volumes section (postgres_data)")
+
+          if errors:
+              for e in errors:
+                  print(f"ERROR: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          print("compose.prod.yaml structure OK")
+          EOF
