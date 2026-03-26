@@ -13,6 +13,7 @@ Routes:
   POST /ui/event-clusters/{id}/assess                trigger assessment, redirect back
   GET  /ui/digests                                   digest runs list
   POST /ui/digests/assemble                          assemble for a date, redirect back
+  POST /ui/digests/{id}/write-entries                write final digest copy (LLM), redirect back
   POST /ui/digests/{id}/render                       render digest page, redirect back
   POST /ui/digest-pages/{page_id}/publish-telegram   publish to Telegram, redirect back
   GET  /ui/pipeline-runs                             pipeline runs list + step detail
@@ -36,6 +37,7 @@ from app.clustering.service import cluster_story
 from app.config import settings
 from app.database import get_db
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
+from app.digest_writer.service import write_digest_entries
 from app.ingestion.service import ingest_source
 from app.models.digest_page import DigestPage
 from app.models.digest_publication import DigestPublication
@@ -323,6 +325,21 @@ def ui_assemble_digest(
     except Exception as exc:  # noqa: BLE001
         logger.exception("UI assemble failed date=%s", digest_date)
         return _redirect("/ui/digests", "err", f"Assemble failed: {exc}")
+
+
+@router.post("/digests/{run_id}/write-entries")
+def ui_write_digest_entries(run_id: uuid.UUID, db: Session = Depends(get_db)) -> RedirectResponse:
+    run = db.get(DigestRun, run_id)
+    if run is None:
+        return _redirect("/ui/digests", "err", "Digest run not found")
+    try:
+        result = write_digest_entries(db, run, settings)
+        msg = f"Wrote {result.get('written', 0)} entries, skipped {result.get('skipped', 0)}, errors {result.get('errors', 0)}"
+        logger.info("UI write-entries run=%s %s", run_id, msg)
+        return _redirect("/ui/digests", "ok", msg)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("UI write-entries failed run=%s", run_id)
+        return _redirect("/ui/digests", "err", f"Write failed: {exc}")
 
 
 @router.post("/digests/{run_id}/render")

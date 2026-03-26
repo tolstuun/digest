@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from app.clustering.rules import build_cluster_key
+from app.llm_usage.schemas import LlmUsageInfo
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
 from app.models.raw_item import RawItem
@@ -99,6 +100,10 @@ def _make_cluster(
     db.refresh(story)
     db.refresh(facts)
     return cluster, story, facts
+
+
+def _mock_usage() -> LlmUsageInfo:
+    return LlmUsageInfo(model_name="claude-haiku-4-5-20251001", input_tokens=100, output_tokens=50)
 
 
 def _mock_assessment(**overrides) -> ClusterAssessment:
@@ -195,7 +200,7 @@ def test_cluster_assessment_llm_score_negative_rejected():
 
 def test_assess_creates_assessment(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assessment, created = assess_cluster(db, cluster)
     assert created is True
     assert assessment.event_cluster_id == cluster.id
@@ -203,7 +208,7 @@ def test_assess_creates_assessment(db):
 
 def test_assess_persists_to_db(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assess_cluster(db, cluster)
     count = db.query(EventClusterAssessment).filter_by(event_cluster_id=cluster.id).count()
     assert count == 1
@@ -211,7 +216,7 @@ def test_assess_persists_to_db(db):
 
 def test_assess_stores_rule_score(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     assert assessment.rule_score is not None
     assert 0.0 <= assessment.rule_score <= 1.0
@@ -219,14 +224,14 @@ def test_assess_stores_rule_score(db):
 
 def test_assess_stores_llm_score(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment(llm_score=0.88)):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(llm_score=0.88), _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     assert assessment.llm_score == 0.88
 
 
 def test_assess_final_score_is_weighted_combination(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment(llm_score=0.90)):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(llm_score=0.90), _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     expected = round(0.4 * assessment.rule_score + 0.6 * assessment.llm_score, 4)
     assert abs(assessment.final_score - expected) < 0.0001
@@ -234,7 +239,7 @@ def test_assess_final_score_is_weighted_combination(db):
 
 def test_assess_stores_model_name(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     assert assessment.model_name is not None
     assert len(assessment.model_name) > 0
@@ -242,7 +247,7 @@ def test_assess_stores_model_name(db):
 
 def test_assess_stores_raw_model_output(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     assert assessment.raw_model_output is not None
     assert isinstance(assessment.raw_model_output, dict)
@@ -251,16 +256,16 @@ def test_assess_stores_raw_model_output(db):
 
 def test_assess_sets_assessed_at(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     assert assessment.assessed_at is not None
 
 
 def test_assess_repeated_updates_not_duplicates(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment(llm_score=0.70)):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(llm_score=0.70), _mock_usage())):
         a1, created1 = assess_cluster(db, cluster)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment(llm_score=0.95)):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(llm_score=0.95), _mock_usage())):
         a2, created2 = assess_cluster(db, cluster)
     assert created1 is True
     assert created2 is False
@@ -272,7 +277,7 @@ def test_assess_repeated_updates_not_duplicates(db):
 def test_assess_stores_section_and_digest_flag(db):
     cluster, story, facts = _make_cluster(db)
     mock = _mock_assessment(primary_section="incidents", include_in_digest=False)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=mock):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(mock, _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     assert assessment.primary_section == "incidents"
     assert assessment.include_in_digest is False
@@ -280,7 +285,7 @@ def test_assess_stores_section_and_digest_flag(db):
 
 def test_assess_stores_why_it_matters(db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assessment, _ = assess_cluster(db, cluster)
     assert assessment.why_it_matters_en
     assert assessment.why_it_matters_ru
@@ -290,7 +295,7 @@ def test_assess_stores_why_it_matters(db):
 
 def test_get_assessment_returns_200(client, db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         assess_cluster(db, cluster)
     resp = client.get(f"/event-clusters/{cluster.id}/assessment")
     assert resp.status_code == 200
@@ -348,7 +353,7 @@ def test_assess_endpoint_cluster_not_found(client):
 
 def test_assess_endpoint_idempotent(client, db):
     cluster, story, facts = _make_cluster(db)
-    with patch("app.scoring.service.assess_cluster_llm", return_value=_mock_assessment()):
+    with patch("app.scoring.service.assess_cluster_llm", return_value=(_mock_assessment(), _mock_usage())):
         resp1 = client.post(f"/admin/event-clusters/{cluster.id}/assess")
         resp2 = client.post(f"/admin/event-clusters/{cluster.id}/assess")
     assert resp1.status_code == 200

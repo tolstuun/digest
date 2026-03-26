@@ -165,18 +165,60 @@ def test_render_html_empty_run_no_crash(db):
     assert "<!DOCTYPE html>" in html
 
 
-def test_render_html_entry_contains_summaries(db):
+def test_render_html_entry_contains_en_summary_by_default(db):
     run, entries = _make_run_with_entries(db, n=1)
-    html = render_digest_html(run, entries)
+    html = render_digest_html(run, entries, output_language="en")
     assert "Summary EN #1" in html
-    assert "Summary RU #1" in html
+    assert "Summary RU #1" not in html
 
 
-def test_render_html_entry_contains_why_it_matters(db):
+def test_render_html_entry_contains_ru_summary_when_language_ru(db):
     run, entries = _make_run_with_entries(db, n=1)
-    html = render_digest_html(run, entries)
+    html = render_digest_html(run, entries, output_language="ru")
+    assert "Summary RU #1" in html
+    assert "Summary EN #1" not in html
+
+
+def test_render_html_entry_contains_why_it_matters_en_by_default(db):
+    run, entries = _make_run_with_entries(db, n=1)
+    html = render_digest_html(run, entries, output_language="en")
     assert "Why EN #1" in html
-    assert "Why RU #1" in html
+    assert "Why RU #1" not in html
+
+
+def test_render_html_entry_shows_source_link(db):
+    run = _make_run(db)
+    entry = DigestEntry(
+        digest_run_id=run.id,
+        rank=1,
+        title="Test",
+        canonical_summary_en="Summary",
+        source_url="https://example.com/article",
+        source_name="Dark Reading",
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    html = render_digest_html(run, [entry], output_language="en")
+    assert "https://example.com/article" in html
+    assert "Dark Reading" in html
+
+
+def test_render_html_entry_shows_final_summary_when_set(db):
+    run = _make_run(db)
+    entry = DigestEntry(
+        digest_run_id=run.id,
+        rank=1,
+        title="Test",
+        canonical_summary_en="Canonical EN",
+        final_summary="Final polished summary",
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    html = render_digest_html(run, [entry], output_language="en")
+    assert "Final polished summary" in html
+    assert "Canonical EN" not in html
 
 
 def test_render_html_entry_contains_score(db):

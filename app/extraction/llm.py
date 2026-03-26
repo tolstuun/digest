@@ -1,14 +1,16 @@
 """
 LLM boundary: single function that calls Anthropic and returns ExtractionResult.
 All tests mock this function — never call it directly from service tests.
+
+Returns (ExtractionResult, LlmUsageInfo).
 """
-import json
 import logging
 
 import anthropic
 
 from app.config import settings
 from app.extraction.schemas import ExtractionResult, StoryInput
+from app.llm_usage.schemas import LlmUsageInfo
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +52,11 @@ _TOOL_SCHEMA = {
 }
 
 
-def extract_facts_llm(story_input: StoryInput) -> ExtractionResult:
-    """Call Anthropic with tool-use to extract structured facts from a story."""
+def extract_facts_llm(story_input: StoryInput) -> tuple[ExtractionResult, LlmUsageInfo]:
+    """
+    Call Anthropic with tool-use to extract structured facts from a story.
+    Returns (ExtractionResult, LlmUsageInfo).
+    """
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     text_parts = []
@@ -72,4 +77,11 @@ def extract_facts_llm(story_input: StoryInput) -> ExtractionResult:
     )
 
     tool_use_block = next(b for b in response.content if b.type == "tool_use")
-    return ExtractionResult(**tool_use_block.input)
+    result = ExtractionResult(**tool_use_block.input)
+    usage = LlmUsageInfo(
+        model_name=settings.extraction_model,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        related_object_id=story_input.story_id,
+    )
+    return result, usage

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from app.extraction.schemas import ExtractionResult
 from app.extraction.service import extract_story_facts
+from app.llm_usage.schemas import LlmUsageInfo
 from app.models.raw_item import RawItem
 from app.models.source import Source
 from app.models.story import Story
@@ -44,6 +45,10 @@ def _make_story(db, summary: str = "Acme Corp raised $50M in Series B.") -> Stor
     db.commit()
     db.refresh(story)
     return story
+
+
+def _mock_usage() -> LlmUsageInfo:
+    return LlmUsageInfo(model_name="claude-haiku-4-5-20251001", input_tokens=100, output_tokens=50)
 
 
 def _mock_result(**overrides) -> ExtractionResult:
@@ -116,7 +121,7 @@ def test_extraction_result_empty_lists_allowed():
 
 def test_extract_creates_story_facts(db):
     story = _make_story(db)
-    with patch("app.extraction.service.extract_facts_llm", return_value=_mock_result()):
+    with patch("app.extraction.service.extract_facts_llm", return_value=(_mock_result(), _mock_usage())):
         facts, created = extract_story_facts(db, story)
 
     assert created is True
@@ -128,7 +133,7 @@ def test_extract_creates_story_facts(db):
 
 def test_extract_persists_to_db(db):
     story = _make_story(db)
-    with patch("app.extraction.service.extract_facts_llm", return_value=_mock_result()):
+    with patch("app.extraction.service.extract_facts_llm", return_value=(_mock_result(), _mock_usage())):
         extract_story_facts(db, story)
 
     count = db.query(StoryFacts).filter_by(story_id=story.id).count()
@@ -137,7 +142,7 @@ def test_extract_persists_to_db(db):
 
 def test_extract_stores_model_name(db):
     story = _make_story(db)
-    with patch("app.extraction.service.extract_facts_llm", return_value=_mock_result()):
+    with patch("app.extraction.service.extract_facts_llm", return_value=(_mock_result(), _mock_usage())):
         facts, _ = extract_story_facts(db, story)
 
     assert facts.model_name is not None
@@ -146,7 +151,7 @@ def test_extract_stores_model_name(db):
 
 def test_extract_stores_raw_model_output(db):
     story = _make_story(db)
-    with patch("app.extraction.service.extract_facts_llm", return_value=_mock_result()):
+    with patch("app.extraction.service.extract_facts_llm", return_value=(_mock_result(), _mock_usage())):
         facts, _ = extract_story_facts(db, story)
 
     assert facts.raw_model_output is not None
@@ -156,7 +161,7 @@ def test_extract_stores_raw_model_output(db):
 
 def test_extract_sets_extracted_at(db):
     story = _make_story(db)
-    with patch("app.extraction.service.extract_facts_llm", return_value=_mock_result()):
+    with patch("app.extraction.service.extract_facts_llm", return_value=(_mock_result(), _mock_usage())):
         facts, _ = extract_story_facts(db, story)
 
     assert facts.extracted_at is not None
@@ -166,11 +171,11 @@ def test_extract_repeated_updates_not_duplicates(db):
     story = _make_story(db)
 
     with patch("app.extraction.service.extract_facts_llm",
-               return_value=_mock_result(extraction_confidence=0.7)):
+               return_value=(_mock_result(extraction_confidence=0.7), _mock_usage())):
         facts1, created1 = extract_story_facts(db, story)
 
     with patch("app.extraction.service.extract_facts_llm",
-               return_value=_mock_result(extraction_confidence=0.95, event_type="mna")):
+               return_value=(_mock_result(extraction_confidence=0.95, event_type="mna"), _mock_usage())):
         facts2, created2 = extract_story_facts(db, story)
 
     assert created1 is True
@@ -190,7 +195,7 @@ def test_extract_multilingual_source(db):
         canonical_summary_en="CyberSec raised $10M.",
         canonical_summary_ru="КиберБез привлекла $10 млн.",
     )
-    with patch("app.extraction.service.extract_facts_llm", return_value=mock):
+    with patch("app.extraction.service.extract_facts_llm", return_value=(mock, _mock_usage())):
         facts, _ = extract_story_facts(db, story)
 
     assert facts.source_language == "ru"
@@ -206,7 +211,7 @@ def test_extract_passes_text_from_raw_payload(db):
 
     def capture_input(story_input):
         captured.append(story_input)
-        return _mock_result()
+        return _mock_result(), _mock_usage()
 
     with patch("app.extraction.service.extract_facts_llm", side_effect=capture_input):
         extract_story_facts(db, story)
@@ -219,7 +224,7 @@ def test_extract_passes_text_from_raw_payload(db):
 
 def test_get_story_facts_returns_200(client, db):
     story = _make_story(db)
-    with patch("app.extraction.service.extract_facts_llm", return_value=_mock_result()):
+    with patch("app.extraction.service.extract_facts_llm", return_value=(_mock_result(), _mock_usage())):
         extract_story_facts(db, story)
 
     resp = client.get(f"/stories/{story.id}/facts")

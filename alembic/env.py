@@ -6,7 +6,7 @@ from sqlalchemy import engine_from_config, pool
 
 # Import Base and all models so Alembic detects them.
 from app.database import Base
-from app.models import digest_entry, digest_page, digest_publication, digest_run, event_cluster, event_cluster_assessment, pipeline_run, pipeline_run_step, raw_item, source, story, story_facts  # noqa: F401
+from app.models import digest_entry, digest_page, digest_publication, digest_run, event_cluster, event_cluster_assessment, llm_usage, pipeline_run, pipeline_run_step, raw_item, source, story, story_facts  # noqa: F401
 
 config = context.config
 

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from app.config import settings as _settings
 from app.models.digest_entry import DigestEntry
 from app.models.digest_page import DigestPage
 from app.models.digest_run import DigestRun
@@ -40,7 +41,8 @@ def render_digest_page(
         .all()
     )
 
-    html = render_digest_html(run, entries)
+    output_language = _settings.digest.output_language
+    html = render_digest_html(run, entries, output_language=output_language)
     slug = make_slug(run)
     title = make_title(run)
     now = datetime.now(timezone.utc)

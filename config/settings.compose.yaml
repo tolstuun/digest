@@ -32,3 +32,7 @@ scheduler:
   enabled: false
   daily_time_utc: "06:00"
   publish_telegram_by_default: false
+
+digest:
+  output_language: "en"
+  model_writing: "claude-haiku-4-5-20251001"

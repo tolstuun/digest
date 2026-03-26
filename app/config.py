@@ -71,6 +71,14 @@ class SchedulerConfig:
     publish_telegram_by_default: bool = False
 
 
+@dataclass
+class DigestConfig:
+    # Language for rendered digest output: "en" or "ru".
+    output_language: str = "en"
+    # Model used for the final digest-writing LLM stage.
+    model_writing: str = "claude-haiku-4-5-20251001"
+
+
 # ── top-level settings ────────────────────────────────────────────────────────
 
 
@@ -82,6 +90,7 @@ class Settings:
     llm: LLMConfig = field(default_factory=LLMConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    digest: DigestConfig = field(default_factory=DigestConfig)
 
     # ── backward-compat properties ────────────────────────────────────────────
     # Existing code that imports `settings.database_url` etc. keeps working.
@@ -180,6 +189,13 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             s.scheduler.publish_telegram_by_default = bool(
                 sc_data["publish_telegram_by_default"]
             )
+
+    if "digest" in data:
+        dg_data = data["digest"]
+        if "output_language" in dg_data:
+            s.digest.output_language = str(dg_data["output_language"])
+        if "model_writing" in dg_data:
+            s.digest.model_writing = str(dg_data["model_writing"])
 
     return s
 

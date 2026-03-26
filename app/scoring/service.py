@@ -11,6 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.llm_usage.service import record_usage
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
 from app.models.source import Source
@@ -105,7 +106,7 @@ def assess_cluster(
     )
 
     # 6. LLM editorial assessment
-    llm_result = assess_cluster_llm(cluster_input)
+    llm_result, llm_usage = assess_cluster_llm(cluster_input)
 
     # 7. Final score
     final_score = round(_RULE_WEIGHT * rule_score + _LLM_WEIGHT * llm_result.llm_score, 4)
@@ -138,6 +139,8 @@ def assess_cluster(
 
     db.commit()
     db.refresh(assessment)
+
+    record_usage(db, "assess", llm_usage)
 
     logger.info(
         "assess_cluster cluster=%s rule=%.3f llm=%.3f final=%.3f include=%s created=%s",

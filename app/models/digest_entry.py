@@ -43,6 +43,14 @@ class DigestEntry(Base):
     why_it_matters_en: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     why_it_matters_ru: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Representative source link — populated at assembly time from the rep story
+    source_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    source_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+
+    # Final polished copy written by the digest-writer LLM stage
+    final_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    final_why_it_matters: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
