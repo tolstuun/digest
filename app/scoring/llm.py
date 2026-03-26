@@ -1,12 +1,15 @@
 """
 LLM boundary for editorial scoring.
 Single function — all service tests mock at this name.
+
+Returns (ClusterAssessment, LlmUsageInfo).
 """
 import logging
 
 import anthropic
 
 from app.config import settings
+from app.llm_usage.schemas import LlmUsageInfo
 from app.scoring.schemas import ClusterAssessment, ClusterInput
 
 logger = logging.getLogger(__name__)
@@ -75,8 +78,11 @@ _TOOL_SCHEMA = {
 }
 
 
-def assess_cluster_llm(cluster_input: ClusterInput) -> ClusterAssessment:
-    """Call Anthropic with tool-use to produce an editorial assessment."""
+def assess_cluster_llm(cluster_input: ClusterInput) -> tuple[ClusterAssessment, LlmUsageInfo]:
+    """
+    Call Anthropic with tool-use to produce an editorial assessment.
+    Returns (ClusterAssessment, LlmUsageInfo).
+    """
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     companies_str = ", ".join(cluster_input.company_names) if cluster_input.company_names else "unknown"
@@ -104,4 +110,11 @@ def assess_cluster_llm(cluster_input: ClusterInput) -> ClusterAssessment:
     )
 
     tool_use_block = next(b for b in response.content if b.type == "tool_use")
-    return ClusterAssessment(**tool_use_block.input)
+    result = ClusterAssessment(**tool_use_block.input)
+    usage = LlmUsageInfo(
+        model_name=settings.extraction_model,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+        related_object_id=cluster_input.cluster_id,
+    )
+    return result, usage

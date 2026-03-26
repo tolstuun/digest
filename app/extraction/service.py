@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.extraction.llm import extract_facts_llm
 from app.extraction.schemas import StoryInput
+from app.llm_usage.service import record_usage
 from app.models.raw_item import RawItem
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
@@ -34,7 +35,7 @@ def extract_story_facts(db: Session, story: Story) -> tuple[StoryFacts, bool]:
         url=story.canonical_url or story.url,
     )
 
-    result = extract_facts_llm(story_input)
+    result, llm_usage = extract_facts_llm(story_input)
     raw_output = result.model_dump()
 
     existing = db.query(StoryFacts).filter_by(story_id=story.id).first()
@@ -63,6 +64,8 @@ def extract_story_facts(db: Session, story: Story) -> tuple[StoryFacts, bool]:
 
     db.commit()
     db.refresh(facts)
+
+    record_usage(db, "extract_facts", llm_usage)
 
     logger.info(
         "extract_story_facts story=%s event_type=%s confidence=%.2f created=%s",

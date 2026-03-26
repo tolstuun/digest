@@ -15,6 +15,7 @@ from app.clustering.service import cluster_story
 from app.config import settings
 from app.database import get_db
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
+from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
 from app.models.digest_page import DigestPage
@@ -227,6 +228,28 @@ def trigger_publish_telegram(
         digest_page_id, pub.status, created,
     )
     return pub
+
+
+@router.post("/digest-runs/{digest_run_id}/write-entries")
+def trigger_write_digest_entries(
+    digest_run_id: uuid.UUID, db: Session = Depends(get_db)
+) -> dict:
+    """
+    Manually trigger the digest-writing LLM stage for one digest run.
+    Produces final_summary and final_why_it_matters for each entry.
+    Idempotent: entries that already have final_summary are skipped.
+    Returns: {total, written, skipped, errors}.
+    """
+    run = db.get(DigestRun, digest_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Digest run not found")
+
+    result = write_digest_entries(db, run, settings)
+    logger.info(
+        "write-entries run=%s written=%d skipped=%d errors=%d",
+        digest_run_id, result.get("written", 0), result.get("skipped", 0), result.get("errors", 0),
+    )
+    return {"digest_run_id": str(digest_run_id), **result}
 
 
 @router.post("/digests/{digest_run_id}/render")

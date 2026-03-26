@@ -16,14 +16,15 @@ Failure policy:
   - Soft misses (e.g. no stories to extract) are "success" with empty details.
 
 Step order (fixed):
-  1. ingest          — fetch all enabled RSS sources
-  2. normalize       — normalize all raw items that lack a story
-  3. extract_facts   — LLM fact extraction for stories without facts
-  4. cluster_event   — cluster stories with facts but no cluster assigned
-  5. assess          — score clusters without an assessment
-  6. assemble_digest — assemble digest for run_date + companies_business
-  7. render_digest   — render HTML for the assembled run
-  8. publish_telegram — send to Telegram if enabled
+  1. ingest             — fetch all enabled RSS sources
+  2. normalize          — normalize all raw items that lack a story
+  3. extract_facts      — LLM fact extraction for stories without facts
+  4. cluster_event      — cluster stories with facts but no cluster assigned
+  5. assess             — score clusters without an assessment
+  6. assemble_digest    — assemble digest for run_date + companies_business
+  7. write_digest       — LLM final digest copy for each entry (configured language)
+  8. render_digest      — render HTML for the assembled run
+  9. publish_telegram   — send to Telegram if enabled
 """
 from __future__ import annotations
 
@@ -36,8 +37,10 @@ from sqlalchemy.orm import Session
 from app.clustering.service import cluster_story
 from app.config import Settings
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
+from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
+from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
 from app.models.pipeline_run import PipelineRun
@@ -60,6 +63,7 @@ STEP_NAMES = [
     "cluster_event",
     "assess",
     "assemble_digest",
+    "write_digest",
     "render_digest",
     "publish_telegram",
 ]
@@ -233,9 +237,18 @@ def _run_assemble_digest(db: Session, run_date: date) -> dict:
     }
 
 
-def _run_render_digest(db: Session, run_date: date) -> dict:
-    from app.models.digest_run import DigestRun
+def _run_write_digest(db: Session, run_date: date, cfg: Settings) -> dict:
+    run = (
+        db.query(DigestRun)
+        .filter_by(digest_date=run_date, section_name=SECTION_NAME)
+        .first()
+    )
+    if run is None:
+        return {"skipped": True, "reason": "no digest run found for date"}
+    return write_digest_entries(db, run, cfg)
 
+
+def _run_render_digest(db: Session, run_date: date) -> dict:
     run = (
         db.query(DigestRun)
         .filter_by(digest_date=run_date, section_name=SECTION_NAME)
@@ -258,7 +271,6 @@ def _run_publish_telegram(
         return {"skipped": True, "reason": "telegram.enabled=false"}
 
     from app.models.digest_page import DigestPage
-    from app.models.digest_run import DigestRun
 
     run = (
         db.query(DigestRun)
@@ -339,6 +351,7 @@ def run_daily_pipeline(
         ("cluster_event",    lambda: _run_cluster_event(db)),
         ("assess",           lambda: _run_assess(db)),
         ("assemble_digest",  lambda: _run_assemble_digest(db, run_date)),
+        ("write_digest",     lambda: _run_write_digest(db, run_date, cfg)),
         ("render_digest",    lambda: _run_render_digest(db, run_date)),
         ("publish_telegram", lambda: (
             _run_publish_telegram(db, run_date, cfg)

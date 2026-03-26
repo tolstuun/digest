@@ -22,10 +22,12 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.digest.filters import should_include_in_companies_business
 from app.models.digest_entry import DigestEntry
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
+from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
 
@@ -124,8 +126,26 @@ def assemble_digest(
     all_candidates = _load_candidates_for_date(db, digest_date, section_name)
     total_candidates = len(all_candidates)
 
-    # Filter to include_in_digest=True, sort by final_score desc, apply limit
-    included = [t for t in all_candidates if t[0].include_in_digest]
+    # Filter: include_in_digest=True AND passes relevance gate
+    def _passes_relevance(t: _CandidateTuple) -> bool:
+        assessment, cluster, rep_story, rep_facts = t
+        if not assessment.include_in_digest:
+            return False
+        if section_name == SECTION_NAME:
+            source_name: Optional[str] = None
+            if rep_story and rep_story.source_id:
+                source = db.get(Source, rep_story.source_id)
+                source_name = source.name if source else None
+            return should_include_in_companies_business(
+                event_type=cluster.event_type,
+                title=rep_story.title if rep_story else None,
+                summary_en=rep_facts.canonical_summary_en if rep_facts else None,
+                company_names=rep_facts.company_names if rep_facts else None,
+                source_name=source_name,
+            )
+        return True
+
+    included = [t for t in all_candidates if _passes_relevance(t)]
     included.sort(key=lambda t: t[0].final_score or 0.0, reverse=True)
     included = included[:max_entries]
 
@@ -146,6 +166,12 @@ def assemble_digest(
     # Materialize DigestEntry for each included cluster
     entries: list[DigestEntry] = []
     for rank, (assessment, cluster, rep_story, rep_facts) in enumerate(included, start=1):
+        # Resolve representative source name for the "read more" link
+        source_name: Optional[str] = None
+        if rep_story and rep_story.source_id:
+            source = db.get(Source, rep_story.source_id)
+            source_name = source.name if source else None
+
         entry = DigestEntry(
             digest_run_id=run.id,
             event_cluster_id=cluster.id,
@@ -156,6 +182,8 @@ def assemble_digest(
             canonical_summary_ru=rep_facts.canonical_summary_ru if rep_facts else None,
             why_it_matters_en=assessment.why_it_matters_en,
             why_it_matters_ru=assessment.why_it_matters_ru,
+            source_url=rep_story.canonical_url or rep_story.url if rep_story else None,
+            source_name=source_name,
         )
         db.add(entry)
         entries.append(entry)

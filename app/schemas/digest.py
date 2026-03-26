@@ -16,6 +16,10 @@ class DigestEntryOut(BaseModel):
     canonical_summary_ru: Optional[str] = None
     why_it_matters_en: Optional[str] = None
     why_it_matters_ru: Optional[str] = None
+    source_url: Optional[str] = None
+    source_name: Optional[str] = None
+    final_summary: Optional[str] = None
+    final_why_it_matters: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

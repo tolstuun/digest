@@ -59,6 +59,9 @@
         {% endif %}
       </td>
       <td style="display:flex;gap:4px;flex-wrap:wrap">
+        <form class="inline" method="post" action="/ui/digests/{{ row.id }}/write-entries">
+          <button class="btn" type="submit">Write</button>
+        </form>
         <form class="inline" method="post" action="/ui/digests/{{ row.id }}/render">
           <button class="btn" type="submit">Render</button>
         </form>

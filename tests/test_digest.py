@@ -33,7 +33,7 @@ TARGET_DATE = date(2026, 3, 24)
 OTHER_DATE = date(2026, 3, 23)
 
 
-def _make_source(db, name: str = "Feed") -> Source:
+def _make_source(db, name: str = "Dark Reading") -> Source:
     source = Source(name=name, type="rss", url="https://example.com/feed", enabled=True, priority=0)
     db.add(source)
     db.flush()
@@ -167,7 +167,7 @@ def _make_full_chain(
     """Create Source → RawItem → Story → StoryFacts → EventCluster → Assessment chain."""
     if company_names is None:
         company_names = ["Acme Corp"]
-    source = _make_source(db, name=f"Feed-{suffix or title[:8]}")
+    source = _make_source(db, name=f"Dark Reading-{suffix or title[:8]}")
     story = _make_story(db, source, title=title, published_at=published_at, suffix=suffix)
     facts = _make_facts(db, story, company_names=company_names)
     cluster = _make_cluster(

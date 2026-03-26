@@ -2,7 +2,8 @@
 HTML rendering for digest pages.
 
 render_digest_html() is a pure function: no DB, no LLM, no side effects.
-It takes a DigestRun and its entries and returns a complete HTML string.
+It takes a DigestRun, its entries, and an output_language, and returns
+a complete HTML string.
 
 Content is HTML-escaped. CSS is inline for portability.
 """
@@ -44,7 +45,9 @@ h1{margin-bottom:4px}
 .summary p{margin:4px 0}
 .why{background:#f4f4f4;padding:10px 14px;border-radius:4px;margin-top:10px}
 .why strong{display:block;margin-bottom:4px}
-.ru{color:#555}
+.source-link{margin-top:8px;font-size:.9em}
+.source-link a{color:#0066cc;text-decoration:none}
+.source-link a:hover{text-decoration:underline}
 footer{margin-top:48px;border-top:1px solid #ddd;padding-top:12px;color:#999;font-size:.8em}
 """
 
@@ -54,32 +57,65 @@ def _e(text: str | None) -> str:
     return _html.escape(text or "")
 
 
-def _render_entry(entry: DigestEntry) -> str:
+def _render_entry(entry: DigestEntry, output_language: str) -> str:
     score = f"{entry.final_score:.3f}" if entry.final_score is not None else "n/a"
+
+    # Summary: prefer final_summary if set, else fall back to language-specific canonical
+    if entry.final_summary:
+        summary_html = f"<p>{_e(entry.final_summary)}</p>"
+    elif output_language == "ru" and entry.canonical_summary_ru:
+        summary_html = f"<p>{_e(entry.canonical_summary_ru)}</p>"
+    else:
+        summary_html = f"<p>{_e(entry.canonical_summary_en)}</p>"
+
+    # Why it matters: prefer final, else fall back to language-specific
+    if entry.final_why_it_matters:
+        why_text = _e(entry.final_why_it_matters)
+    elif output_language == "ru" and entry.why_it_matters_ru:
+        why_text = _e(entry.why_it_matters_ru)
+    else:
+        why_text = _e(entry.why_it_matters_en)
+
+    # Source link
+    if entry.source_url:
+        source_label = _e(entry.source_name) if entry.source_name else "Read more"
+        source_block = (
+            f'  <div class="source-link">'
+            f'<a href="{_e(entry.source_url)}" rel="noopener" target="_blank">'
+            f"Read more → {source_label}"
+            f"</a></div>\n"
+        )
+    else:
+        source_block = ""
+
     return (
         f'<div class="entry">\n'
         f'  <div class="rank">#{entry.rank}</div>\n'
         f'  <div class="entry-title">{_e(entry.title)}</div>\n'
         f'  <div class="score">Score: {score}</div>\n'
         f'  <div class="summary">\n'
-        f'    <p>{_e(entry.canonical_summary_en)}</p>\n'
-        f'    <p class="ru">{_e(entry.canonical_summary_ru)}</p>\n'
+        f"    {summary_html}\n"
         f"  </div>\n"
         f'  <div class="why">\n'
         f"    <strong>Why it matters</strong>\n"
-        f"    <p>{_e(entry.why_it_matters_en)}</p>\n"
-        f'    <p class="ru">{_e(entry.why_it_matters_ru)}</p>\n'
+        f"    <p>{why_text}</p>\n"
         f"  </div>\n"
+        f"{source_block}"
         f"</div>"
     )
 
 
-def render_digest_html(run: DigestRun, entries: list[DigestEntry]) -> str:
+def render_digest_html(
+    run: DigestRun,
+    entries: list[DigestEntry],
+    output_language: str = "en",
+) -> str:
     """
     Render a complete HTML page for the given digest run and entries.
 
     Pure function — no DB access, no LLM calls.
     Entries should be pre-sorted by rank before passing in.
+    output_language controls which language fields are used ("en" or "ru").
     """
     title = make_title(run)
     section_display = run.section_name.replace("_", " ").title()
@@ -89,15 +125,17 @@ def render_digest_html(run: DigestRun, entries: list[DigestEntry]) -> str:
     if count == 0:
         body = "<p>No entries for this digest.</p>"
     else:
-        body = "\n".join(_render_entry(e) for e in entries)
+        body = "\n".join(_render_entry(e, output_language) for e in entries)
 
     generated_str = (
         run.generated_at.strftime("%Y-%m-%d %H:%M UTC") if run.generated_at else "n/a"
     )
 
+    lang_attr = _e(output_language) if output_language else "en"
+
     return (
         "<!DOCTYPE html>\n"
-        '<html lang="en">\n'
+        f'<html lang="{lang_attr}">\n'
         "<head>\n"
         '  <meta charset="UTF-8">\n'
         '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n'

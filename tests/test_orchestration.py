@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.config import AppConfig, DatabaseConfig, LLMConfig, SchedulerConfig, Settings, TelegramConfig
+from app.config import AppConfig, DatabaseConfig, DigestConfig, LLMConfig, SchedulerConfig, Settings, TelegramConfig
+from app.llm_usage.schemas import LlmUsageInfo
 from app.models.pipeline_run import PipelineRun
 from app.models.pipeline_run_step import PipelineRunStep
 from app.models.raw_item import RawItem
@@ -21,6 +22,10 @@ from app.orchestration.service import run_daily_pipeline
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 TARGET_DATE = date(2026, 3, 25)
+
+
+def _mock_usage() -> LlmUsageInfo:
+    return LlmUsageInfo(model_name="claude-haiku-4-5-20251001", input_tokens=100, output_tokens=50)
 
 
 def _make_settings(
@@ -41,6 +46,7 @@ def _make_settings(
             enabled=False,
             publish_telegram_by_default=publish_telegram_by_default,
         ),
+        digest=DigestConfig(output_language="en"),
     )
 
 
@@ -148,29 +154,43 @@ def _run_full_pipeline_mocked(db, run_date=None, publish_telegram=False):
         patch("app.orchestration.service.ingest_source", side_effect=_mock_ingest_returns_empty),
         patch("app.extraction.service.extract_facts_llm") as mock_llm,
         patch("app.scoring.llm.assess_cluster_llm") as mock_assess_llm,
+        patch("app.digest_writer.service.write_digest_entry_llm") as mock_write_llm,
         patch("app.publishing.service.send_telegram_message", return_value="42"),
     ):
-        # Mock LLM to return valid extraction result
-        mock_llm.return_value = MagicMock(
-            event_type="funding",
-            company_names=["Acme Corp"],
-            person_names=[],
-            product_names=[],
-            geography_names=[],
-            amount_text="50M",
-            currency="USD",
-            source_language="en",
-            canonical_summary_en="Acme raised $50M.",
-            canonical_summary_ru="Acme привлекла $50M.",
-            extraction_confidence=0.9,
+        # Mock LLM to return valid extraction result (tuple: result, usage)
+        mock_llm.return_value = (
+            MagicMock(
+                event_type="funding",
+                company_names=["Acme Corp"],
+                person_names=[],
+                product_names=[],
+                geography_names=[],
+                amount_text="50M",
+                currency="USD",
+                source_language="en",
+                canonical_summary_en="Acme raised $50M.",
+                canonical_summary_ru="Acme привлекла $50M.",
+                extraction_confidence=0.9,
+            ),
+            _mock_usage(),
         )
-        mock_assess_llm.return_value = MagicMock(
-            primary_section="companies_business",
-            llm_score=0.8,
-            include_in_digest=True,
-            why_it_matters_en="Big deal.",
-            why_it_matters_ru="Важная сделка.",
-            editorial_notes=None,
+        mock_assess_llm.return_value = (
+            MagicMock(
+                primary_section="companies_business",
+                llm_score=0.8,
+                include_in_digest=True,
+                why_it_matters_en="Big deal.",
+                why_it_matters_ru="Важная сделка.",
+                editorial_notes=None,
+            ),
+            _mock_usage(),
+        )
+        mock_write_llm.return_value = (
+            MagicMock(
+                final_summary="Acme raised $50M in Series B.",
+                final_why_it_matters="Significant deal.",
+            ),
+            _mock_usage(),
         )
         return run_daily_pipeline(
             db=db,
@@ -210,6 +230,7 @@ def test_orchestration_creates_steps_for_all_stages(db):
     assert "cluster_event" in step_names
     assert "assess" in step_names
     assert "assemble_digest" in step_names
+    assert "write_digest" in step_names
     assert "render_digest" in step_names
     assert "publish_telegram" in step_names
 
