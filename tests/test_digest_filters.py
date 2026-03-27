@@ -15,6 +15,7 @@ import pytest
 
 from app.digest.filters import (
     BUSINESS_EVENT_TYPES,
+    _company_names_have_security_vendor,
     _has_content_security_signal,
     is_business_eligible,
     is_generic_noise,
@@ -354,3 +355,100 @@ def test_real_security_earnings_passes():
         company_names=["CrowdStrike"],
         source_name="Reuters",
     ) is True
+
+
+# ── _company_names_have_security_vendor ──────────────────────────────────────
+
+def test_vendor_present_returns_true():
+    assert _company_names_have_security_vendor(["CrowdStrike", "Acme"]) is True
+
+
+def test_no_vendor_returns_false():
+    assert _company_names_have_security_vendor(["OpenAI", "Meta"]) is False
+
+
+def test_empty_list_returns_false():
+    assert _company_names_have_security_vendor([]) is False
+
+
+def test_none_returns_false():
+    assert _company_names_have_security_vendor(None) is False
+
+
+# ── is_generic_noise — new noise terms ───────────────────────────────────────
+
+def test_openai_is_noise():
+    assert is_generic_noise(title="OpenAI raises $5B in funding", summary_en="The AI company plans expansion.") is True
+
+
+def test_youtube_is_noise():
+    assert is_generic_noise(title="YouTube launches new creator monetization", summary_en="Google expands YouTube.") is True
+
+
+def test_google_gemini_is_noise():
+    assert is_generic_noise(title="Google Gemini gets major update", summary_en="The AI model is now faster.") is True
+
+
+def test_meta_platforms_is_noise():
+    assert is_generic_noise(title="Meta Platforms reports strong Q2 earnings", summary_en="Social revenue grew.") is True
+
+
+def test_iphone_is_noise():
+    assert is_generic_noise(title="Apple launches iPhone 17", summary_en="New device features unveiled.") is True
+
+
+# ── should_include_in_companies_business — new noise-bypass tests ─────────────
+
+def test_openai_funding_with_incidental_security_keyword_blocked():
+    """OpenAI funding with an incidental security keyword must still be blocked."""
+    assert should_include_in_companies_business(
+        event_type="funding",
+        title="OpenAI raises $5B",
+        summary_en="The company plans to invest in AI safety and authentication systems.",
+        company_names=["OpenAI"],
+        source_name="TechCrunch",
+    ) is False
+
+
+def test_security_vendor_integration_with_openai_not_blocked():
+    """CrowdStrike story mentioning OpenAI must not be blocked by 'openai' noise."""
+    assert should_include_in_companies_business(
+        event_type="partnership",
+        title="CrowdStrike integrates OpenAI models for threat detection",
+        summary_en="The cybersecurity company will use OpenAI to enhance its endpoint security platform.",
+        company_names=["CrowdStrike"],
+        source_name="Dark Reading",
+    ) is True
+
+
+def test_meta_platforms_earnings_blocked():
+    """Generic Meta Platforms earnings with no cybersecurity angle must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="earnings",
+        title="Meta Platforms reports record quarterly earnings",
+        summary_en="Strong ad revenue driven by Facebook and Instagram growth.",
+        company_names=["Meta Platforms"],
+        source_name="Bloomberg",
+    ) is False
+
+
+def test_google_gemini_product_launch_blocked():
+    """Google Gemini product news must be blocked even with incidental security keyword."""
+    assert should_include_in_companies_business(
+        event_type="product_launch",
+        title="Google Gemini adds new authentication features",
+        summary_en="The AI assistant now supports multi-factor authentication.",
+        company_names=["Google"],
+        source_name="TechCrunch",
+    ) is False
+
+
+def test_iphone_launch_blocked():
+    """Apple iPhone news must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="product_launch",
+        title="Apple launches iPhone 17 with enhanced security chip",
+        summary_en="The new device includes endpoint security improvements.",
+        company_names=["Apple"],
+        source_name="TechCrunch",
+    ) is False
