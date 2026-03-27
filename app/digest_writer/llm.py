@@ -22,19 +22,30 @@ _TOOL_SCHEMA = {
     "description": (
         "Write polished digest copy for one news entry. "
         "Output must be in the requested language. "
-        "Keep final_summary to 1-2 clear, factual sentences. "
-        "Keep final_why_it_matters to 1-2 sentences explaining business significance."
+        "Write final_summary as 2-3 clear, factual sentences: state what happened, "
+        "name the company, include deal size or key detail if available, and add brief context. "
+        "Write final_why_it_matters as 2-3 sentences: explain the business or security significance "
+        "concretely — what this means for the market, buyers, or competitors. "
+        "Keep both fields tight and businesslike; avoid marketing language."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "final_summary": {
                 "type": "string",
-                "description": "1-2 sentence factual summary in the requested language.",
+                "description": (
+                    "2-3 sentence factual summary in the requested language. "
+                    "State what happened, name the company, include key figures, "
+                    "and add one sentence of context."
+                ),
             },
             "final_why_it_matters": {
                 "type": "string",
-                "description": "1-2 sentence business significance in the requested language.",
+                "description": (
+                    "2-3 sentence business/security significance in the requested language. "
+                    "Explain concretely what this means for the market, buyers, or competitors. "
+                    "Avoid vague phrases; be specific."
+                ),
             },
         },
         "required": ["final_summary", "final_why_it_matters"],
@@ -77,7 +88,7 @@ def write_digest_entry_llm(
 
     response = client.messages.create(
         model=model_name,
-        max_tokens=512,
+        max_tokens=768,
         tools=[_TOOL_SCHEMA],
         tool_choice={"type": "tool", "name": _TOOL_NAME},
         messages=[{"role": "user", "content": prompt}],
