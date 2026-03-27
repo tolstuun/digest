@@ -111,6 +111,31 @@ _GENERIC_TECH_NOISE: frozenset[str] = frozenset([
     # ── gaming ────────────────────────────────────────────────────────────────
     "video game",
     "gaming studio",
+    # ── OpenAI / non-security AI companies ────────────────────────────────────
+    # "openai" alone is blocked; security-vendor integration stories
+    # (e.g. "CrowdStrike integrates OpenAI") are exempt via the vendor bypass
+    # in should_include_in_companies_business.
+    "openai",
+    # ── Google consumer / AI-product noise ────────────────────────────────────
+    "youtube",
+    "google gemini",
+    "google deepmind",
+    "google bard",
+    "google assistant",
+    "google pixel",
+    "google chrome",
+    "google ads",
+    "google search",
+    "gmail",
+    # ── Meta corporate / consumer products ────────────────────────────────────
+    "meta platforms",
+    "oculus",
+    # ── Apple consumer devices / OS ───────────────────────────────────────────
+    "iphone",
+    "ipad",
+    "apple watch",
+    "ios ",
+    "macos ",
 ])
 
 # ── 3. Security relevance signals ─────────────────────────────────────────────
@@ -273,6 +298,14 @@ def is_security_relevant(
     return False
 
 
+def _company_names_have_security_vendor(company_names: Optional[list[str]]) -> bool:
+    """Return True if any entry in company_names matches a known security vendor hint."""
+    if not company_names:
+        return False
+    companies_str = " ".join(company_names).lower()
+    return any(hint in companies_str for hint in _SECURITY_VENDOR_HINTS)
+
+
 def is_generic_noise(title: Optional[str], summary_en: Optional[str]) -> bool:
     """Return True if the story looks like off-topic tech/consumer noise."""
     combined = f"{title or ''} {summary_en or ''}".strip()
@@ -311,8 +344,14 @@ def should_include_in_companies_business(
     # Block generic consumer/tech noise even when a security keyword appears
     # incidentally (e.g. "WhatsApp end-to-end encryption update" is consumer
     # news, not cybersecurity business news).
-    if is_generic_noise(title, summary_en):
-        return False
+    #
+    # Exception: bypass the noise check when a known security vendor is listed
+    # in company_names — the story is genuinely about that vendor even if a
+    # consumer brand is mentioned incidentally (e.g. "CrowdStrike integrates
+    # OpenAI for threat detection" should not be blocked by "openai" noise).
+    if not _company_names_have_security_vendor(company_names):
+        if is_generic_noise(title, summary_en):
+            return False
 
     return True
 
