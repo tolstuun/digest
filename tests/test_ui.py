@@ -139,6 +139,13 @@ def test_dashboard_no_errors_shows_muted(client, db):
     assert "No source errors" in resp.text
 
 
+def test_dashboard_shows_build_sha(client, monkeypatch):
+    monkeypatch.setenv("APP_GIT_SHA", "deadbeef1234")
+    resp = client.get("/ui/")
+    assert resp.status_code == 200
+    assert "deadbeef1234" in resp.text
+
+
 # ── sources page ──────────────────────────────────────────────────────────────
 
 

@@ -127,6 +127,7 @@ def ui_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
             "active": "dashboard",
             "counts": counts,
             "recent_errors": recent_errors,
+            "git_sha": os.environ.get("APP_GIT_SHA", "unknown"),
             "flash": _flash(request),
         },
     )
