@@ -56,6 +56,11 @@ def test_backward_compat_extraction_model():
     assert s.extraction_model == s.llm.model_extraction
 
 
+def test_backward_compat_scoring_model():
+    s = load_settings(config_path="/nonexistent/settings.yaml")
+    assert s.scoring_model == s.llm.model_scoring
+
+
 # ── YAML loading ──────────────────────────────────────────────────────────────
 
 
