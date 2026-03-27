@@ -166,23 +166,27 @@ jobs:
 
       - name: Verify deployed version
         # Fail the workflow if the running app does not report the expected git SHA.
-        # This catches cases where the container was not recreated with the new image.
+        # Retries for up to 60s — /version may not be ready the instant /health passes.
         run: |
           EXPECTED_SHA="${{ steps.meta.outputs.sha }}"
           echo "Expected SHA: $EXPECTED_SHA"
 
-          ssh -i ~/.ssh/deploy_key \
+          ssh -i ~/.ssh/deploy_key -T \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
             EXPECTED_SHA="$EXPECTED_SHA" \
-            'bash -s' <<'ENDSSH'
+            'bash -se' <<'ENDSSH'
           set -e
-          echo "Querying /version on running app..."
-          RUNNING_SHA=$(curl -fsS http://127.0.0.1:8000/version | python3 -c "import sys,json; print(json.load(sys.stdin)['git_sha'])")
-          echo "Running SHA:  $RUNNING_SHA"
-          echo "Expected SHA: $EXPECTED_SHA"
-          if [ "$RUNNING_SHA" != "$EXPECTED_SHA" ]; then
-            echo "VERSION MISMATCH — deploy did not switch to the new image" >&2
-            exit 1
-          fi
-          echo "Version verified OK."
+          echo "Waiting for /version to report expected SHA..."
+          for i in $(seq 1 12); do
+            RUNNING_SHA=$(curl -fsS http://127.0.0.1:8000/version 2>/dev/null \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['git_sha'])" 2>/dev/null || true)
+            echo "  attempt $i/12 — running: ${RUNNING_SHA:-<no response>}  expected: $EXPECTED_SHA"
+            if [ "$RUNNING_SHA" = "$EXPECTED_SHA" ]; then
+              echo "Version verified OK."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "VERSION MISMATCH after 60s — deploy did not switch to the new image" >&2
+          exit 1
           ENDSSH
