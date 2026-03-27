@@ -102,7 +102,7 @@ def assess_cluster_llm(cluster_input: ClusterInput) -> tuple[ClusterAssessment, 
     )
 
     response = client.messages.create(
-        model=settings.extraction_model,
+        model=settings.scoring_model,
         max_tokens=512,
         tools=[_TOOL_SCHEMA],
         tool_choice={"type": "tool", "name": _TOOL_NAME},
@@ -112,7 +112,7 @@ def assess_cluster_llm(cluster_input: ClusterInput) -> tuple[ClusterAssessment, 
     tool_use_block = next(b for b in response.content if b.type == "tool_use")
     result = ClusterAssessment(**tool_use_block.input)
     usage = LlmUsageInfo(
-        model_name=settings.extraction_model,
+        model_name=settings.scoring_model,
         input_tokens=response.usage.input_tokens,
         output_tokens=response.usage.output_tokens,
         related_object_id=cluster_input.cluster_id,

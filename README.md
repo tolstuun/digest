@@ -27,7 +27,7 @@ Publishes a daily web page and sends a Telegram message linking to it.
 **Phase 2B — LLM fact extraction** ✅
 - `story_facts` table — one row per story, upsert on re-extraction
 - `ExtractionResult` schema — typed event_type (11 values), confidence bounds
-- Anthropic tool-use for structured JSON output (`claude-haiku-4-5-20251001`)
+- Anthropic tool-use for structured JSON output; model configured via `llm.model_extraction` (default: `claude-haiku-4-5-20251001`)
 - `extract_story_facts()` service — idempotent upsert, stores model name + raw output
 - `GET /stories/{id}/facts`, `POST /admin/stories/{id}/extract-facts`
 
@@ -41,7 +41,7 @@ Publishes a daily web page and sends a Telegram message linking to it.
 **Phase 3B — Editorial scoring** ✅
 - `event_cluster_assessments` table — one row per cluster (upserted on reassessment)
 - `compute_rule_score()` — deterministic pre-score; weights visible in code (event_type, coverage, amount, source priority)
-- `assess_cluster_llm()` — Anthropic tool-use boundary: returns `primary_section`, `llm_score`, `include_in_digest`, bilingual editorial notes
+- `assess_cluster_llm()` — Anthropic tool-use boundary: returns `primary_section`, `llm_score`, `include_in_digest`, bilingual editorial notes; model configured via `llm.model_scoring` (default: `claude-haiku-4-5-20251001`)
 - `assess_cluster()` — combines scores: `final_score = 0.4 * rule_score + 0.6 * llm_score`; idempotent upsert
 - `GET /event-clusters/{id}/assessment`, `POST /admin/event-clusters/{id}/assess`
 

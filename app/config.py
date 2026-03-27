@@ -107,6 +107,10 @@ class Settings:
     def extraction_model(self) -> str:
         return self.llm.model_extraction
 
+    @property
+    def scoring_model(self) -> str:
+        return self.llm.model_scoring
+
 
 # ── loader ────────────────────────────────────────────────────────────────────
 

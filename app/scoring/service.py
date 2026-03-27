@@ -133,7 +133,7 @@ def assess_cluster(
     assessment.why_it_matters_en = llm_result.why_it_matters_en
     assessment.why_it_matters_ru = llm_result.why_it_matters_ru
     assessment.editorial_notes = llm_result.editorial_notes
-    assessment.model_name = settings.extraction_model
+    assessment.model_name = settings.scoring_model
     assessment.raw_model_output = llm_result.model_dump()
     assessment.assessed_at = datetime.now(timezone.utc)
 
