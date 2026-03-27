@@ -4,13 +4,21 @@ name: Deploy
 # Also triggerable manually via workflow_dispatch.
 #
 # Required repository secrets:
-#   DEPLOY_SSH_KEY  — private SSH key (corresponding public key in server's authorized_keys)
-#   DEPLOY_HOST     — server hostname or IP
-#   DEPLOY_USER     — SSH user on the server
+#   DEPLOY_SSH_KEY        — private SSH key (corresponding public key in server's authorized_keys)
+#   DEPLOY_HOST           — server hostname or IP
+#   DEPLOY_USER           — SSH user on the server
+#   DEPLOY_GHCR_USERNAME  — GitHub username with read:packages access to pull from GHCR
+#   DEPLOY_GHCR_TOKEN     — GitHub PAT with read:packages scope (does not expire with workflow)
 #
 # Server prerequisites (set up once, outside this workflow):
 #   /opt/security-digest/config/settings.yaml — runtime YAML config (not in repo)
 #   Docker and Docker Compose installed on the server
+#
+# Rollback: to redeploy a previous version, run workflow_dispatch and set
+#   the ref to the commit SHA, or manually run on the server:
+#     export DEPLOY_IMAGE=ghcr.io/<owner>/digest:<old-sha>
+#     docker compose -f compose.prod.yaml pull
+#     docker compose -f compose.prod.yaml up -d --force-recreate
 
 on:
   workflow_run:
@@ -38,7 +46,17 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Log in to GHCR
+      - name: Resolve deploy SHA
+        id: meta
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          SHORT="${SHA:0:7}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${{ github.repository }}:$SHA" >> "$GITHUB_OUTPUT"
+          echo "Deploying SHA: $SHA"
+
+      - name: Log in to GHCR (runner)
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -53,9 +71,11 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            GIT_SHA=${{ steps.meta.outputs.sha }}
           tags: |
             ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.event.workflow_run.head_sha || github.sha }}
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -66,25 +86,37 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts
 
-      - name: Copy prod compose to server
+      - name: Generate deploy compose with exact image tag
         run: |
-          scp -i ~/.ssh/deploy_key compose.prod.yaml \
+          # Write compose.prod.yaml with the exact SHA-tagged image so the server
+          # always runs the specific image built from this commit — not just :latest.
+          sed "s|ghcr.io/${{ github.repository }}:latest|${{ steps.meta.outputs.image }}|g" \
+            compose.prod.yaml > /tmp/compose.deploy.yaml
+          echo "Deploy image tag: $(grep 'image:' /tmp/compose.deploy.yaml)"
+
+      - name: Copy deploy compose to server
+        run: |
+          scp -i ~/.ssh/deploy_key /tmp/compose.deploy.yaml \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/security-digest/compose.prod.yaml
 
       - name: Authenticate server with GHCR
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Uses a dedicated PAT (DEPLOY_GHCR_TOKEN) — not GITHUB_TOKEN, which is
+        # ephemeral and workflow-scoped and has caused auth failures on the server.
         run: |
-          echo "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key \
+          echo "${{ secrets.DEPLOY_GHCR_TOKEN }}" | ssh -i ~/.ssh/deploy_key \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
-            "docker login ghcr.io --username ${{ github.actor }} --password-stdin"
+            "docker login ghcr.io --username ${{ secrets.DEPLOY_GHCR_USERNAME }} --password-stdin"
 
       - name: Deploy
         run: |
           ssh -i ~/.ssh/deploy_key \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} <<'ENDSSH'
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            DEPLOY_IMAGE='${{ steps.meta.outputs.image }}' \
+            'bash -s' <<'ENDSSH'
           set -e
           cd /opt/security-digest
+
+          echo "=== Deploying image: $DEPLOY_IMAGE ==="
 
           # Ensure DB is up and healthy before running migrations
           docker compose -f compose.prod.yaml up -d db
@@ -96,18 +128,20 @@ jobs:
             sleep 5
           done
 
-          # Pull latest app image
+          # Pull the exact SHA-tagged image — explicit, not relying on local cache
           docker compose -f compose.prod.yaml pull app
 
           # Apply any pending migrations
           docker compose -f compose.prod.yaml run --rm app alembic upgrade head
 
-          # Start / recreate app; remove containers not in this compose file
-          docker compose -f compose.prod.yaml up -d --remove-orphans
+          # Recreate the app container unconditionally to guarantee the new image runs
+          docker compose -f compose.prod.yaml up -d --force-recreate --remove-orphans app
 
           # Retire old smoke stack if still running (idempotent)
           docker stop security-digest-smoke 2>/dev/null && \
             docker rm security-digest-smoke 2>/dev/null || true
+
+          echo "=== Deploy commands completed ==="
           ENDSSH
 
       - name: Smoke check
@@ -127,4 +161,27 @@ jobs:
           done
           echo "Smoke check failed after 60s" >&2
           exit 1
+          ENDSSH
+
+      - name: Verify deployed version
+        # Fail the workflow if the running app does not report the expected git SHA.
+        # This catches cases where the container was not recreated with the new image.
+        run: |
+          EXPECTED_SHA="${{ steps.meta.outputs.sha }}"
+          echo "Expected SHA: $EXPECTED_SHA"
+
+          ssh -i ~/.ssh/deploy_key \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            EXPECTED_SHA="$EXPECTED_SHA" \
+            'bash -s' <<'ENDSSH'
+          set -e
+          echo "Querying /version on running app..."
+          RUNNING_SHA=$(curl -fsS http://127.0.0.1:8000/version | python3 -c "import sys,json; print(json.load(sys.stdin)['git_sha'])")
+          echo "Running SHA:  $RUNNING_SHA"
+          echo "Expected SHA: $EXPECTED_SHA"
+          if [ "$RUNNING_SHA" != "$EXPECTED_SHA" ]; then
+            echo "VERSION MISMATCH — deploy did not switch to the new image" >&2
+            exit 1
+          fi
+          echo "Version verified OK."
           ENDSSH

@@ -179,20 +179,46 @@ uvicorn app.main:app --reload
 
 Every push to `main` that passes CI automatically triggers the `Deploy` workflow, which:
 
-1. Builds the app Docker image and pushes it to GitHub Container Registry (GHCR) — tagged `:latest` and `:<commit-sha>`
-2. Copies `compose.prod.yaml` to the server at `/opt/security-digest/compose.prod.yaml`
-3. Logs Docker in to GHCR on the server
-4. Starts the DB (if not running), waits for it to be healthy
-5. Pulls the new app image
-6. Runs `alembic upgrade head` (migrations — idempotent and additive)
-7. Starts/restarts the app with `docker compose up -d --remove-orphans`
-8. Verifies `GET /health` responds successfully
+1. Resolves the exact commit SHA being deployed
+2. Builds the app Docker image with `--build-arg GIT_SHA=<sha>` and pushes two tags to GHCR: `:latest` and `:<commit-sha>`
+3. Generates a deploy-time `compose.prod.yaml` with the exact SHA tag substituted in (not `:latest`)
+4. Copies the generated compose file to the server
+5. Authenticates the server to GHCR using `DEPLOY_GHCR_TOKEN` (dedicated PAT — does not expire with the workflow)
+6. Starts the DB (if not running), waits for it to be healthy
+7. Pulls the exact SHA-tagged image — explicit, not relying on local cache
+8. Runs `alembic upgrade head` (migrations — idempotent and additive)
+9. Runs `docker compose up -d --force-recreate` — unconditionally recreates the app container
+10. Verifies `GET /health` responds successfully
+11. **Verifies `GET /version` returns the expected SHA** — workflow fails if there is a mismatch
+
+### Version verification
+
+The running app exposes its build SHA at `GET /version`:
+```json
+{"git_sha": "a1b2c3d4e5f6..."}
+```
+
+The deploy workflow queries this endpoint after startup and compares it to the expected SHA. If they do not match, the workflow fails — there is no silent success.
+
+You can also check the running version at any time:
+- `GET /version` — JSON API
+- `/ui/config` — shows git SHA in the Build section
+
+### Required GitHub repository secrets
+
+| Secret | Purpose |
+|--------|---------|
+| `DEPLOY_SSH_KEY` | Private SSH key; public key must be in server's `authorized_keys` |
+| `DEPLOY_HOST` | Server hostname or IP |
+| `DEPLOY_USER` | SSH user on the server |
+| `DEPLOY_GHCR_USERNAME` | GitHub username with `read:packages` access to pull images |
+| `DEPLOY_GHCR_TOKEN` | GitHub PAT with `read:packages` scope — used for server-side GHCR pull (does not expire with workflow) |
 
 ### Server layout
 
 ```
 /opt/security-digest/
-  compose.prod.yaml          — written by deploy workflow on every deploy
+  compose.prod.yaml          — generated and written by deploy workflow on every deploy
   config/
     settings.yaml            — runtime config; NOT in repo; set up once on the server
 ```
@@ -213,36 +239,38 @@ Every push to `main` that passes CI automatically triggers the `Deploy` workflow
    #   - Leave database.url as postgresql://digest:digest@db:5432/digest
    ```
 3. Add the deploy SSH key to `~/.ssh/authorized_keys`
-4. Add repository secrets in GitHub:
-   - `DEPLOY_SSH_KEY` — private SSH key
-   - `DEPLOY_HOST` — server hostname or IP
-   - `DEPLOY_USER` — SSH user
+4. Add the five GitHub repository secrets listed above (`DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_GHCR_USERNAME`, `DEPLOY_GHCR_TOKEN`)
 
 ### Compose files: local dev vs production
 
 | | `docker-compose.yml` | `compose.prod.yaml` |
 |---|---|---|
 | Purpose | Local development | Production server |
-| Image | Built from local `Dockerfile` | Pre-built from GHCR |
+| Image | Built from local `Dockerfile` | Pre-built from GHCR (exact SHA tag) |
 | App command | `uvicorn --reload` | `uvicorn` (no reload) |
 | Code mount | Yes (full repo bind-mount) | No |
 | Config | `config/settings.compose.yaml` (in repo) | `/opt/security-digest/config/settings.yaml` (on server) |
 | DB port | `5432:5432` exposed to host | Not exposed (internal only) |
-| Managed by | Developer | Deploy workflow |
+| Managed by | Developer | Deploy workflow (generated per deploy) |
 
 ### Rollback
 
-To roll back to a previous version:
+Each merged commit SHA has a corresponding immutable GHCR image tag. To roll back:
 
 ```bash
-# On the server — replace <sha> with the commit SHA to roll back to
-ssh user@server \
-  "sed -i 's|:latest|:<sha>|' /opt/security-digest/compose.prod.yaml && \
-   docker compose -f /opt/security-digest/compose.prod.yaml pull app && \
-   docker compose -f /opt/security-digest/compose.prod.yaml up -d app"
+# Option 1: trigger the deploy workflow manually via GitHub UI,
+# setting the ref to the commit SHA you want to redeploy.
+
+# Option 2: manual rollback on the server
+OLD_SHA=<previous-commit-sha>
+IMAGE=ghcr.io/tolstuun/digest:$OLD_SHA
+docker login ghcr.io -u <DEPLOY_GHCR_USERNAME> -p <DEPLOY_GHCR_TOKEN>
+sed "s|ghcr.io/tolstuun/digest:latest|$IMAGE|g" compose.prod.yaml > /tmp/rollback.yaml
+docker compose -f /tmp/rollback.yaml pull
+docker compose -f /tmp/rollback.yaml up -d --force-recreate
 ```
 
-GHCR retains tagged images for each merged commit SHA. No re-deploy of new code is required.
+GHCR retains tagged images for each merged commit SHA.
 
 ---
 

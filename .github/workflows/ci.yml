@@ -76,6 +76,8 @@ jobs:
               errors.append("compose.prod.yaml: app.image must be set (not built from context)")
           if "build" in app:
               errors.append("compose.prod.yaml: app must not have a 'build' key — use pre-built image")
+          if app.get("image") and not app["image"].startswith("ghcr.io/"):
+              errors.append("compose.prod.yaml: app.image must reference ghcr.io/ (not a local tag)")
           if app.get("command", "").find("--reload") != -1:
               errors.append("compose.prod.yaml: app command must not use --reload")
           vols = [str(v) for v in app.get("volumes", [])]
