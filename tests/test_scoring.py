@@ -360,3 +360,33 @@ def test_assess_endpoint_idempotent(client, db):
     assert resp2.status_code == 200
     assert resp1.json()["cluster_id"] == resp2.json()["cluster_id"]
     assert resp2.json()["created"] is False
+
+
+# ── early relevance gate in _run_assess ──────────────────────────────────────
+
+def test_run_assess_skips_irrelevant_cluster_before_llm(db):
+    """Clusters that fail the companies_business gate are skipped before the LLM is called."""
+    from app.orchestration.service import _run_assess
+
+    cluster, _, _ = _make_cluster(db, event_type="funding", company_names=["Starbucks Coffee"])
+    with patch("app.scoring.service.assess_cluster_llm") as mock_llm:
+        result = _run_assess(db)
+
+    mock_llm.assert_not_called()
+    assert result["skipped"] == 1
+    assert result["assessed"] == 0
+
+
+def test_run_assess_processes_relevant_cluster(db):
+    """Clusters that pass the companies_business gate proceed to LLM assessment."""
+    from app.orchestration.service import _run_assess
+
+    cluster, _, _ = _make_cluster(db, event_type="funding", company_names=["CrowdStrike"])
+    with patch(
+        "app.scoring.service.assess_cluster_llm",
+        return_value=(_mock_assessment(), _mock_usage()),
+    ):
+        result = _run_assess(db)
+
+    assert result["assessed"] == 1
+    assert result["skipped"] == 0

@@ -13,6 +13,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.digest.filters import should_include_in_companies_business
+from app.digest.service import SECTION_NAME
 from app.digest_writer.llm import write_digest_entry_llm
 from app.digest_writer.schemas import DigestEntryInput
 from app.llm_usage.service import record_usage
@@ -82,6 +84,23 @@ def write_digest_entries(
                         company_names = facts.company_names or []
                         amount_text = facts.amount_text
                         currency = facts.currency
+
+        # Relevance gate: skip entries that fail the companies_business filter.
+        # Only checked when a cluster is attached; entries without a cluster pass.
+        if entry.event_cluster_id and run.section_name == SECTION_NAME:
+            if not should_include_in_companies_business(
+                event_type=event_type,
+                title=entry.title,
+                summary_en=entry.canonical_summary_en,
+                company_names=company_names,
+                source_name=entry.source_name,
+            ):
+                skipped += 1
+                logger.debug(
+                    "write_digest entry=%s skipped: fails companies_business relevance gate",
+                    entry.id,
+                )
+                continue
 
         # Also check assessment for why_it_matters
         why_it_matters_en: Optional[str] = entry.why_it_matters_en
