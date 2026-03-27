@@ -78,8 +78,8 @@ def _make_facts(
     company_names: list | None = None,
     amount_text: str = "$50M",
     currency: str = "USD",
-    summary_en: str = "Company raised $50M.",
-    summary_ru: str = "Компания привлекла $50M.",
+    summary_en: str = "The cybersecurity company raised $50M in funding.",
+    summary_ru: str = "Компания по кибербезопасности привлекла $50M в раунде финансирования.",
 ) -> StoryFacts:
     if company_names is None:
         company_names = ["Acme Corp"]

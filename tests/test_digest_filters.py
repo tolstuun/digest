@@ -1,12 +1,21 @@
 """
-Tests for Phase 5A: digest relevance filters (companies_business section).
+Tests for digest relevance filters (companies_business section).
 
 Pure logic tests — no DB, no LLM, no network.
+
+Design notes (reflected in tests):
+  - companies_business is intentionally strict: only genuine cybersecurity
+    business news (funding, M&A, earnings, market moves of security vendors).
+  - A security-focused source alone is NOT sufficient to pass; the story
+    content must carry an explicit cybersecurity signal.
+  - Incidents and regulation are out of scope here; they will get their own
+    sections later.
 """
 import pytest
 
 from app.digest.filters import (
     BUSINESS_EVENT_TYPES,
+    _has_content_security_signal,
     is_business_eligible,
     is_generic_noise,
     is_security_relevant,
@@ -69,7 +78,60 @@ def test_all_business_types_covered():
     assert BUSINESS_EVENT_TYPES == expected
 
 
-# ── is_security_relevant ──────────────────────────────────────────────────────
+# ── _has_content_security_signal ──────────────────────────────────────────────
+
+def test_content_signal_keyword_in_title():
+    assert _has_content_security_signal(
+        title="Startup raises $50M for endpoint security platform",
+        summary_en="The round was led by Sequoia.",
+        company_names=["Acme"],
+    ) is True
+
+
+def test_content_signal_keyword_in_summary():
+    assert _has_content_security_signal(
+        title="Generic tech funding",
+        summary_en="The company focuses on ransomware detection and response.",
+        company_names=["Acme"],
+    ) is True
+
+
+def test_content_signal_vendor_in_company_names():
+    assert _has_content_security_signal(
+        title="Acquisition announced",
+        summary_en="Deal terms not disclosed.",
+        company_names=["CrowdStrike", "Acme Corp"],
+    ) is True
+
+
+def test_content_signal_vendor_hint_in_title():
+    assert _has_content_security_signal(
+        title="Palo Alto Networks raises $500M",
+        summary_en="The deal was completed this week.",
+        company_names=["PANW"],
+    ) is True
+
+
+def test_content_signal_no_signal_returns_false():
+    assert _has_content_security_signal(
+        title="Company raises $100M in Series D",
+        summary_en="The round was led by Sequoia.",
+        company_names=["Coffee Corp"],
+    ) is False
+
+
+def test_content_signal_source_not_considered():
+    """Source name must NOT influence the content security signal."""
+    # Generic title/summary/company with no security content → False,
+    # even if we imagine the caller got this from a security publication.
+    assert _has_content_security_signal(
+        title="Acquisition announced",
+        summary_en="Deal terms were not disclosed.",
+        company_names=["TechCorp"],
+    ) is False
+
+
+# ── is_security_relevant (includes source signal) ────────────────────────────
 
 def test_security_source_passes():
     assert is_security_relevant(
@@ -139,6 +201,27 @@ def test_spotify_is_noise():
     ) is True
 
 
+def test_whatsapp_is_noise():
+    assert is_generic_noise(
+        title="WhatsApp launches new privacy feature",
+        summary_en="The messaging platform adds end-to-end encryption.",
+    ) is True
+
+
+def test_chatgpt_is_noise():
+    assert is_generic_noise(
+        title="OpenAI raises $1B for ChatGPT expansion",
+        summary_en="AI chatbot gets more funding.",
+    ) is True
+
+
+def test_generative_ai_is_noise():
+    assert is_generic_noise(
+        title="Startup raises $200M for generative AI platform",
+        summary_en="The company builds AI-generated content tools.",
+    ) is True
+
+
 def test_security_related_not_noise():
     assert is_generic_noise(
         title="CrowdStrike raises $200M",
@@ -186,12 +269,24 @@ def test_full_check_fails_when_no_security_signal():
     ) is False
 
 
-def test_full_check_passes_via_source_name():
+def test_source_alone_is_not_sufficient():
+    """Security source without cybersecurity content must not pass."""
     assert should_include_in_companies_business(
         event_type="mna",
         title="Acquisition announced",
         summary_en="Deal terms were not disclosed.",
         company_names=["TechCorp"],
+        source_name="SecurityWeek",
+    ) is False
+
+
+def test_security_source_plus_content_signal_passes():
+    """Source + content signal together should still pass."""
+    assert should_include_in_companies_business(
+        event_type="mna",
+        title="CrowdStrike acquires identity startup",
+        summary_en="The cybersecurity company expands its identity protection portfolio.",
+        company_names=["CrowdStrike"],
         source_name="SecurityWeek",
     ) is True
 
@@ -204,3 +299,58 @@ def test_full_check_fails_for_unknown_event_type():
         company_names=["CrowdStrike"],
         source_name="Dark Reading",
     ) is False
+
+
+def test_whatsapp_product_launch_blocked_even_from_security_source():
+    """WhatsApp consumer updates must not reach companies_business."""
+    assert should_include_in_companies_business(
+        event_type="product_launch",
+        title="WhatsApp launches new privacy feature",
+        summary_en="The messaging platform adds new settings.",
+        company_names=["Meta", "WhatsApp"],
+        source_name="SecurityWeek",
+    ) is False
+
+
+def test_generic_meta_corporate_news_blocked():
+    """Generic big-tech news with no cybersecurity angle must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="mna",
+        title="Meta acquires AI startup",
+        summary_en="Meta is expanding its generative AI capabilities.",
+        company_names=["Meta"],
+        source_name="Dark Reading",
+    ) is False
+
+
+def test_generic_chatgpt_news_blocked():
+    """Generic AI product news without security relevance must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="funding",
+        title="OpenAI raises $500M for ChatGPT expansion",
+        summary_en="The AI company plans to scale its large language model.",
+        company_names=["OpenAI"],
+        source_name="TechCrunch",
+    ) is False
+
+
+def test_real_security_mna_with_vendor_passes():
+    """Genuine cybersecurity M&A must still pass."""
+    assert should_include_in_companies_business(
+        event_type="mna",
+        title="Palo Alto Networks acquires cloud security startup",
+        summary_en="The acquisition strengthens the company's cloud security portfolio.",
+        company_names=["Palo Alto Networks"],
+        source_name="Bloomberg",
+    ) is True
+
+
+def test_real_security_earnings_passes():
+    """Earnings from a known security vendor must still pass."""
+    assert should_include_in_companies_business(
+        event_type="earnings",
+        title="CrowdStrike reports record Q4 earnings",
+        summary_en="CrowdStrike posted strong quarterly results driven by endpoint security growth.",
+        company_names=["CrowdStrike"],
+        source_name="Reuters",
+    ) is True

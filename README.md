@@ -83,11 +83,12 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /digest-publications/`, `GET /digest-publications/{id}`
 - UI: Publish to Telegram button on digests page (shown when `telegram.enabled=true`); publication status column
 
-**Early relevance gate (companies_business)** ✅
-- `cluster_passes_companies_business_gate(db, cluster)` — DB-aware wrapper over `should_include_in_companies_business()`; applied before expensive LLM stages
-- Assess step (`_run_assess`): clusters that fail the gate are logged and skipped before `assess_cluster_llm` is called; result includes a `skipped` count
-- Digest-writer step (`write_digest_entries`): entries linked to clusters that fail the gate are skipped before `write_digest_entry_llm` is called; filtering happens at assembly time AND here as defence-in-depth
-- No changes to filter rules, output language, source links, or LLM schema
+**companies_business relevance gate** ✅
+- `should_include_in_companies_business()` — intentionally strict; covers only genuine cybersecurity business news (funding, M&A, earnings, market moves of security vendors)
+- Three-layer check: (1) business event-type allowlist → (2) content security signal (keyword or known vendor in title/summary/company — **source name alone is not sufficient**) → (3) generic consumer/tech noise denylist (WhatsApp, ChatGPT, generative AI, Meta AI, consumer streaming/mobility, etc.)
+- `_has_content_security_signal()` — internal check that excludes source name; used by the main gate to enforce story-level relevance
+- `cluster_passes_companies_business_gate(db, cluster)` — DB-aware wrapper; applied before expensive LLM stages (assess + digest-writer)
+- Incidents and regulation will be handled as separate sections; this filter does not cover them
 
 **Phase 4E — Daily scheduler + run orchestration** ✅ *(current)*
 - `pipeline_runs` table — one row per pipeline execution; columns: run_date, trigger_type, status, started_at, finished_at, error_message

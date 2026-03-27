@@ -7,8 +7,16 @@ Entry point: should_include_in_companies_business(event_type, title, summary_en,
 
 Filtering pipeline (in order):
   1. Business event type gate — allowlist of business-relevant event types.
-  2. Generic tech noise denylist — block obviously non-security stories.
-  3. Security relevance gate — require at least one security signal.
+  2. Content security signal — keyword or vendor in story text/company list.
+     Source name alone is NOT sufficient; the story itself must carry the signal.
+  3. Generic tech/consumer noise denylist — block off-topic stories even when
+     a security keyword happens to appear incidentally.
+
+Note on section scope:
+  This filter is intentionally strict and covers only the companies_business
+  section (funding, M&A, earnings, market moves of cybersecurity vendors).
+  Incidents and regulation will be handled as separate sections in future;
+  do not relax this filter to accommodate those story types.
 
 DB-aware helper: cluster_passes_companies_business_gate(db, cluster)
   Loads rep story/facts/source from the database and delegates to
@@ -32,40 +40,84 @@ BUSINESS_EVENT_TYPES: frozenset[str] = frozenset([
     "product_launch",
 ])
 
-# ── 2. Generic tech noise denylist ───────────────────────────────────────────
-# Stories whose title/summary contain these phrases (case-insensitive) and have
-# NO security signals are blocked as off-topic tech noise.
+# ── 2. Generic tech/consumer noise denylist ───────────────────────────────────
+# Stories whose title/summary contain these phrases are blocked as off-topic
+# consumer or generic tech noise.  This list is checked AFTER the content
+# security signal — a story that mentions a known security vendor AND one of
+# these terms still passes (e.g. "Palo Alto Networks partners with…"), but a
+# story that reaches this check via a generic keyword incidentally is blocked.
 _GENERIC_TECH_NOISE: frozenset[str] = frozenset([
+    # ── consumer social / messaging ───────────────────────────────────────────
     "social media",
     "tiktok",
     "instagram",
     "facebook",
     "twitter",
+    "whatsapp",
+    "messaging app",
+    "messaging platform",
+    "social platform",
+    "social network",
+    "short-form video",
+    "short video platform",
+    # ── consumer entertainment / streaming ────────────────────────────────────
     "spotify",
     "netflix",
+    "music streaming",
+    "streaming service",
+    "apple music",
+    "youtube music",
+    "amazon prime video",
+    "prime video",
+    # ── consumer mobility / gig economy ──────────────────────────────────────
     "uber",
     "lyft",
     "airbnb",
     "food delivery",
     "ride sharing",
-    "streaming service",
-    "music streaming",
-    "video game",
-    "gaming studio",
+    "ride-sharing",
+    # ── generic consumer tech ─────────────────────────────────────────────────
+    "smart speaker",
+    "smartwatch",
+    "fitness tracker",
+    "electric vehicle",
+    "autonomous driving",
+    "self-driving",
     "consumer app",
     "fitness app",
     "dating app",
+    # ── generic AI / LLM products with no security angle ─────────────────────
+    "chatgpt",
+    "dall-e",
+    "generative ai",
+    "ai-generated content",
+    "ai assistant",
+    "ai chatbot",
+    "ai image generator",
+    "text-to-image",
+    "large language model",
+    "meta ai",
+    "meta quest",
+    "google maps",
+    "google photos",
+    "google workspace",
+    # ── retail / food / offline ───────────────────────────────────────────────
     "e-commerce",
     "online retail",
     "fashion brand",
     "retail chain",
     "fast food",
     "restaurant chain",
+    # ── gaming ────────────────────────────────────────────────────────────────
+    "video game",
+    "gaming studio",
 ])
 
 # ── 3. Security relevance signals ─────────────────────────────────────────────
 
-# Publication names that are cybersecurity-focused (source name contains one of these)
+# Publication names that are cybersecurity-focused (source name contains one of these).
+# Used only in is_security_relevant() for general purposes.
+# NOT used as a standalone pass condition for companies_business.
 _SECURITY_SOURCES: frozenset[str] = frozenset([
     "krebs",
     "dark reading",
@@ -153,6 +205,37 @@ def _text_contains_any(text: str, terms: frozenset[str]) -> bool:
     return any(term in lower for term in terms)
 
 
+def _has_content_security_signal(
+    title: Optional[str],
+    summary_en: Optional[str],
+    company_names: Optional[list[str]],
+) -> bool:
+    """
+    Return True if the story content itself carries a security signal:
+      - title/summary contains a security keyword, OR
+      - a company/product name matches a known security vendor.
+
+    Source name is intentionally excluded here.  For companies_business the
+    story text must carry the signal; publishing source is not sufficient.
+    """
+    combined = f"{title or ''} {summary_en or ''}".strip()
+
+    # Keyword signal in content
+    if combined and _text_contains_any(combined, _SECURITY_KEYWORDS):
+        return True
+
+    # Vendor hint in company_names
+    if company_names:
+        companies_str = " ".join(company_names).lower()
+        if any(hint in companies_str for hint in _SECURITY_VENDOR_HINTS):
+            return True
+        # Also check title+summary for vendor hints
+        if combined and any(hint in combined.lower() for hint in _SECURITY_VENDOR_HINTS):
+            return True
+
+    return False
+
+
 def is_security_relevant(
     title: Optional[str],
     summary_en: Optional[str],
@@ -164,6 +247,9 @@ def is_security_relevant(
       - source name is a known security publication
       - title/summary contains a security keyword
       - a company/product name matches a known security vendor hint
+
+    Note: for companies_business filtering, use _has_content_security_signal()
+    instead — source name alone is not a valid pass condition there.
     """
     combined = f"{title or ''} {summary_en or ''}".strip()
 
@@ -207,19 +293,25 @@ def should_include_in_companies_business(
 
     Returns True only when:
       1. event_type is in the business allowlist
-      2. story passes the security relevance check
-      3. story is not generic consumer/tech noise
+      2. the story content carries an explicit cybersecurity signal
+         (keyword or known vendor — source name alone is not sufficient)
+      3. the story is not generic consumer/tech noise
+
+    This filter is intentionally strict.  Incidents and regulation stories
+    will be handled by their own sections; do not relax it for those types.
     """
     if not is_business_eligible(event_type):
         return False
 
-    # Security relevance is checked before noise to avoid false negatives
-    # (a story can mention "streaming service" but still be about a security company)
-    security_ok = is_security_relevant(title, summary_en, company_names, source_name)
-    if not security_ok:
+    # Require cybersecurity relevance in the story content itself.
+    # A security-focused source is useful context but not a standalone pass.
+    if not _has_content_security_signal(title, summary_en, company_names):
         return False
 
-    if is_generic_noise(title, summary_en) and not security_ok:
+    # Block generic consumer/tech noise even when a security keyword appears
+    # incidentally (e.g. "WhatsApp end-to-end encryption update" is consumer
+    # news, not cybersecurity business news).
+    if is_generic_noise(title, summary_en):
         return False
 
     return True
