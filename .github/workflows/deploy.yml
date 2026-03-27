@@ -94,10 +94,12 @@ jobs:
             compose.prod.yaml > /tmp/compose.deploy.yaml
           echo "Deploy image tag: $(grep 'image:' /tmp/compose.deploy.yaml)"
 
-      - name: Copy deploy compose to server
+      - name: Copy deploy files to server
         run: |
           scp -i ~/.ssh/deploy_key /tmp/compose.deploy.yaml \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/security-digest/compose.prod.yaml
+          scp -i ~/.ssh/deploy_key scripts/deploy_app.sh \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/security-digest/deploy_app.sh
 
       - name: Authenticate server with GHCR
         # Uses a dedicated PAT (DEPLOY_GHCR_TOKEN) — not GITHUB_TOKEN, which is
@@ -111,47 +113,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key \
             ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
-            DEPLOY_IMAGE='${{ steps.meta.outputs.image }}' \
-            'bash -s' <<'ENDSSH'
-          set -e
-          cd /opt/security-digest
-
-          echo "=== Deploying image: $DEPLOY_IMAGE ==="
-
-          # Ensure DB is up and healthy before running migrations
-          docker compose -f compose.prod.yaml up -d db
-          echo "Waiting for database to be healthy..."
-          for i in $(seq 1 12); do
-            docker compose -f compose.prod.yaml exec -T db \
-              pg_isready -U digest -d digest && break
-            echo "  attempt $i/12 — retrying in 5s"
-            sleep 5
-          done
-
-          # Pull the exact SHA-tagged image directly — bypasses compose resolution
-          # and any local cache ambiguity; fails fast if GHCR is unreachable or auth fails
-          echo "--- Pulling image: $DEPLOY_IMAGE ---"
-          docker pull "$DEPLOY_IMAGE"
-
-          # Hard-verify the image now exists locally before touching the container
-          echo "--- Verifying image is present locally ---"
-          docker image inspect "$DEPLOY_IMAGE"
-
-          # Apply any pending migrations
-          docker compose -f compose.prod.yaml run --rm app alembic upgrade head
-
-          # Stop and remove the app container explicitly, then start fresh.
-          # rm -sf is the confirmed-working replacement sequence; --force-recreate
-          # alone does not reliably pick up the new image in all Docker versions.
-          docker compose -f compose.prod.yaml rm -sf app || true
-          docker compose -f compose.prod.yaml up -d app
-
-          # Log which image the running container is actually using
-          docker inspect --format='Running image: {{.Config.Image}}' \
-            "$(docker compose -f compose.prod.yaml ps -q app)"
-
-          echo "=== Deploy commands completed ==="
-          ENDSSH
+            "bash /opt/security-digest/deploy_app.sh '${{ steps.meta.outputs.image }}'"
 
       - name: Smoke check
         run: |
