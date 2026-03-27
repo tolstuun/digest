@@ -140,12 +140,15 @@ jobs:
           # Apply any pending migrations
           docker compose -f compose.prod.yaml run --rm app alembic upgrade head
 
-          # Recreate the app container unconditionally to guarantee the new image runs
-          docker compose -f compose.prod.yaml up -d --force-recreate --remove-orphans app
+          # Stop and remove the app container explicitly, then start fresh.
+          # rm -sf is the confirmed-working replacement sequence; --force-recreate
+          # alone does not reliably pick up the new image in all Docker versions.
+          docker compose -f compose.prod.yaml rm -sf app || true
+          docker compose -f compose.prod.yaml up -d app
 
-          # Retire old smoke stack if still running (idempotent)
-          docker stop security-digest-smoke 2>/dev/null && \
-            docker rm security-digest-smoke 2>/dev/null || true
+          # Log which image the running container is actually using
+          docker inspect --format='Running image: {{.Config.Image}}' \
+            "$(docker compose -f compose.prod.yaml ps -q app)"
 
           echo "=== Deploy commands completed ==="
           ENDSSH
