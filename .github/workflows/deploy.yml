@@ -146,8 +146,9 @@ jobs:
 
       - name: Smoke check
         run: |
-          ssh -i ~/.ssh/deploy_key \
-            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} <<'ENDSSH'
+          ssh -i ~/.ssh/deploy_key -T \
+            ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            'bash -se' <<'ENDSSH'
           set -e
           echo "Waiting for app to respond..."
           for i in $(seq 1 12); do
