@@ -3,6 +3,22 @@
 {% block content %}
 <h1>Configuration <span class="muted" style="font-size:0.8em;font-weight:400">(read-only)</span></h1>
 
+<h2>Build</h2>
+<table>
+  <tbody>
+    <tr>
+      <th width="220">git_sha</th>
+      <td>
+        {% if git_sha and git_sha != "unknown" %}
+          <code>{{ git_sha }}</code>
+        {% else %}
+          <span class="muted">unknown (local / non-deployed build)</span>
+        {% endif %}
+      </td>
+    </tr>
+  </tbody>
+</table>
+
 <p class="muted">Loaded from: <strong>{{ config_path }}</strong>
   {% if config_file_exists %}
     <span class="badge badge-ok">file found</span>

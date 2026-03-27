@@ -23,6 +23,7 @@ Routes:
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -473,6 +474,7 @@ def ui_config(request: Request) -> HTMLResponse:
             "cfg": settings,
             "config_path": settings.config_path,
             "config_file_exists": config_file_exists,
+            "git_sha": os.environ.get("APP_GIT_SHA", "unknown"),
             "flash": _flash(request),
         },
     )
