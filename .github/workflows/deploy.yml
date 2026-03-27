@@ -128,8 +128,14 @@ jobs:
             sleep 5
           done
 
-          # Pull the exact SHA-tagged image — explicit, not relying on local cache
-          docker compose -f compose.prod.yaml pull app
+          # Pull the exact SHA-tagged image directly — bypasses compose resolution
+          # and any local cache ambiguity; fails fast if GHCR is unreachable or auth fails
+          echo "--- Pulling image: $DEPLOY_IMAGE ---"
+          docker pull "$DEPLOY_IMAGE"
+
+          # Hard-verify the image now exists locally before touching the container
+          echo "--- Verifying image is present locally ---"
+          docker image inspect "$DEPLOY_IMAGE"
 
           # Apply any pending migrations
           docker compose -f compose.prod.yaml run --rm app alembic upgrade head
