@@ -9,8 +9,17 @@ Filtering pipeline (in order):
   1. Business event type gate — allowlist of business-relevant event types.
   2. Generic tech noise denylist — block obviously non-security stories.
   3. Security relevance gate — require at least one security signal.
+
+DB-aware helper: cluster_passes_companies_business_gate(db, cluster)
+  Loads rep story/facts/source from the database and delegates to
+  should_include_in_companies_business.  Used to gate expensive LLM stages
+  (assess, digest_writer) before they run.
 """
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+    from app.models.event_cluster import EventCluster
 
 # ── 1. Business event type allowlist ─────────────────────────────────────────
 # Only these event types belong in the companies_business section.
@@ -214,3 +223,42 @@ def should_include_in_companies_business(
         return False
 
     return True
+
+
+# ── DB-aware gate helper ──────────────────────────────────────────────────────
+
+def cluster_passes_companies_business_gate(db: "Session", cluster: "EventCluster") -> bool:
+    """
+    Load cluster data from the database and run should_include_in_companies_business.
+
+    Used before expensive LLM stages (assess, digest_writer) to skip clusters
+    that will not survive the relevance gate at assembly time.
+    """
+    from sqlalchemy.orm import Session  # noqa: F401 (imported for runtime use)
+    from app.models.source import Source
+    from app.models.story import Story
+    from app.models.story_facts import StoryFacts
+
+    rep_story = None
+    rep_facts = None
+    source_name: Optional[str] = None
+
+    if cluster.representative_story_id:
+        rep_story = db.get(Story, cluster.representative_story_id)
+        if rep_story:
+            rep_facts = (
+                db.query(StoryFacts)
+                .filter_by(story_id=rep_story.id)
+                .first()
+            )
+            if rep_story.source_id:
+                source = db.get(Source, rep_story.source_id)
+                source_name = source.name if source else None
+
+    return should_include_in_companies_business(
+        event_type=cluster.event_type,
+        title=rep_story.title if rep_story else None,
+        summary_en=rep_facts.canonical_summary_en if rep_facts else None,
+        company_names=rep_facts.company_names if rep_facts else None,
+        source_name=source_name,
+    )

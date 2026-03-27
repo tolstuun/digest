@@ -83,6 +83,12 @@ Publishes a daily web page and sends a Telegram message linking to it.
 - `GET /digest-publications/`, `GET /digest-publications/{id}`
 - UI: Publish to Telegram button on digests page (shown when `telegram.enabled=true`); publication status column
 
+**Early relevance gate (companies_business)** ✅
+- `cluster_passes_companies_business_gate(db, cluster)` — DB-aware wrapper over `should_include_in_companies_business()`; applied before expensive LLM stages
+- Assess step (`_run_assess`): clusters that fail the gate are logged and skipped before `assess_cluster_llm` is called; result includes a `skipped` count
+- Digest-writer step (`write_digest_entries`): entries linked to clusters that fail the gate are skipped before `write_digest_entry_llm` is called; filtering happens at assembly time AND here as defence-in-depth
+- No changes to filter rules, output language, source links, or LLM schema
+
 **Phase 4E — Daily scheduler + run orchestration** ✅ *(current)*
 - `pipeline_runs` table — one row per pipeline execution; columns: run_date, trigger_type, status, started_at, finished_at, error_message
 - `pipeline_run_steps` table — one row per step per run; columns: step_name, status, started_at, finished_at, error_message, details_json

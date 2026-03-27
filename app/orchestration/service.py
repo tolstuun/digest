@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.clustering.service import cluster_story
 from app.config import Settings
+from app.digest.filters import cluster_passes_companies_business_gate
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
 from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts
@@ -212,15 +213,22 @@ def _run_assess(db: Session) -> dict:
         .filter(EventClusterAssessment.id.is_(None))
         .all()
     )
-    assessed = errors = 0
+    assessed = errors = skipped = 0
     for cluster in clusters:
+        if not cluster_passes_companies_business_gate(db, cluster):
+            skipped += 1
+            logger.debug(
+                "assess skipped cluster=%s: fails companies_business relevance gate",
+                cluster.id,
+            )
+            continue
         try:
             assess_cluster(db, cluster)
             assessed += 1
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("assess failed cluster=%s: %s", cluster.id, exc)
-    return {"total": len(clusters), "assessed": assessed, "errors": errors}
+    return {"total": len(clusters), "assessed": assessed, "skipped": skipped, "errors": errors}
 
 
 def _run_assemble_digest(db: Session, run_date: date) -> dict:
