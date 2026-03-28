@@ -572,6 +572,65 @@ def test_scheduler_start_enabled_creates_job():
         stop_scheduler()
 
 
+def test_scheduled_job_uses_yesterday(db, monkeypatch):
+    """Scheduled runs must use yesterday's date, not today."""
+    from datetime import date, timedelta
+    from unittest.mock import patch, MagicMock
+    from app.scheduler import _run_scheduled_job
+
+    captured = {}
+
+    def fake_pipeline(db, run_date, trigger_type, publish_telegram, cfg):
+        captured["run_date"] = run_date
+        captured["trigger_type"] = trigger_type
+        return {"status": "success", "pipeline_run_id": 1}
+
+    # Both imports inside _run_scheduled_job are lazy; patch at their source modules.
+    with patch("app.database.SessionLocal", return_value=db), \
+         patch("app.orchestration.service.run_daily_pipeline", fake_pipeline):
+        _run_scheduled_job(daily_time_utc="06:00")
+
+    expected = date.today() - timedelta(days=1)
+    assert captured["run_date"] == expected, (
+        f"Scheduled job used {captured['run_date']!r}, expected yesterday {expected!r}"
+    )
+    assert captured["trigger_type"] == "scheduled"
+
+
+def test_manual_pipeline_uses_explicit_date(db):
+    """Manual/admin-triggered runs use the explicitly passed run_date unchanged."""
+    from datetime import date
+    from unittest.mock import patch
+    from app.orchestration.service import run_daily_pipeline
+    from app.config import settings
+
+    captured = {}
+    original = run_daily_pipeline
+
+    explicit_date = date(2025, 1, 15)
+
+    with patch("app.orchestration.service.run_daily_pipeline", wraps=original) as mock:
+        try:
+            run_daily_pipeline(
+                db=db,
+                run_date=explicit_date,
+                trigger_type="manual",
+                publish_telegram=False,
+                cfg=settings,
+            )
+        except Exception:
+            pass  # pipeline may fail without full data; we only care about the call arg
+        # Verify it was called with the explicit date (not yesterday)
+        call_kwargs = mock.call_args
+        # run_daily_pipeline was called directly — just confirm explicit_date passed through
+    # Simpler: call directly and verify run_date is not modified
+    from app.models.pipeline_run import PipelineRun
+    run = db.query(PipelineRun).filter_by(run_date=explicit_date).first()
+    # The pipeline run record uses the explicitly passed date
+    assert run is not None
+    assert run.run_date == explicit_date
+
+
 # ── UI pipeline-runs page ─────────────────────────────────────────────────────
 
 
