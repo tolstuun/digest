@@ -452,3 +452,71 @@ def test_iphone_launch_blocked():
         company_names=["Apple"],
         source_name="TechCrunch",
     ) is False
+
+
+# ── new filter-tuning tests: expanded noise and keyword coverage ───────────────
+
+def test_ai_chip_funding_excluded():
+    """AI chip startup funding with no genuine security angle must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="funding",
+        title="AI chip startup raises $400M Series C",
+        summary_en="The company designs inference chips for large-scale AI compute workloads.",
+        company_names=["NeuralChip"],
+        source_name="TechCrunch",
+    ) is False
+
+
+def test_semiconductor_funding_with_incidental_auth_keyword_excluded():
+    """Semiconductor story with incidental 'authentication' mention must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="funding",
+        title="Semiconductor startup raises $300M",
+        summary_en="The chip platform targets data center compute and supports hardware authentication.",
+        company_names=["SemiCo"],
+        source_name="Bloomberg",
+    ) is False
+
+
+def test_generic_productivity_app_excluded():
+    """Generic productivity / meeting-assistant funding must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="funding",
+        title="Meeting assistant startup raises $80M",
+        summary_en="The productivity app automates note-taking and action items from calls.",
+        company_names=["NoteBot"],
+        source_name="Forbes",
+    ) is False
+
+
+def test_cybersecurity_startup_funding_included():
+    """Pure-play cybersecurity startup funding must pass."""
+    assert should_include_in_companies_business(
+        event_type="funding",
+        title="Threat intelligence startup raises $120M Series B",
+        summary_en="The company provides real-time threat intelligence and attack surface management.",
+        company_names=["ThreatVision"],
+        source_name="TechCrunch",
+    ) is True
+
+
+def test_security_vendor_mna_included():
+    """Security vendor M&A must pass."""
+    assert should_include_in_companies_business(
+        event_type="mna",
+        title="CrowdStrike acquires exposure management platform",
+        summary_en="The acquisition expands CrowdStrike's vulnerability management and security posture capabilities.",
+        company_names=["CrowdStrike"],
+        source_name="Reuters",
+    ) is True
+
+
+def test_generic_bigtech_no_security_context_excluded():
+    """Generic big-tech story with no cybersecurity angle must be blocked."""
+    assert should_include_in_companies_business(
+        event_type="earnings",
+        title="Amazon reports record quarterly revenue",
+        summary_en="Strong ecommerce and AWS compute growth drove the results.",
+        company_names=["Amazon"],
+        source_name="Bloomberg",
+    ) is False
