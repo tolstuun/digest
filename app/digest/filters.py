@@ -101,6 +101,38 @@ _GENERIC_TECH_NOISE: frozenset[str] = frozenset([
     "google maps",
     "google photos",
     "google workspace",
+    # ── chips / semiconductors / generic AI infrastructure ────────────────────
+    # These categories rarely carry genuine cybersecurity business news.
+    # Stories with an incidental security keyword (e.g. "authentication") but
+    # primarily about chip design / AI compute are blocked here.
+    "ai chip",
+    "ai chips",
+    "semiconductor",
+    "semiconductors",
+    "gpu ",
+    "gpus",
+    "inference chip",
+    "inference chips",
+    "compute chip",
+    "foundation model",
+    "llm platform",
+    # ── consumer content generation ───────────────────────────────────────────
+    "music generation",
+    "video generation",
+    "image generation",
+    # ── productivity / collaboration tools ────────────────────────────────────
+    "meeting assistant",
+    "note taker",
+    "notetaker",
+    "productivity app",
+    # ── consumer devices ─────────────────────────────────────────────────────
+    "smartphone",
+    "handset",
+    # ── adtech / martech / ecommerce ─────────────────────────────────────────
+    "adtech",
+    "martech",
+    "ad tech",
+    "mar tech",
     # ── retail / food / offline ───────────────────────────────────────────────
     "e-commerce",
     "online retail",
@@ -183,21 +215,32 @@ _SECURITY_KEYWORDS: frozenset[str] = frozenset([
     # domain terms
     "cybersecurity", "cyber security", "infosecurity", "information security",
     "network security", "cloud security", "endpoint security", "application security",
+    "data security", "email security", "browser security",
     "devsecops", "appsec", "soc ", "siem", "xdr", "edr", "mdr",
     # threat terms
     "ransomware", "malware", "phishing", "vulnerability", "exploit", "zero-day",
     "zero day", "breach", "hack", "threat intel", "threat detection",
+    "threat intelligence", "threat actor", "threat landscape",
+    "cyberattack", "cyber attack",
     "incident response", "penetration test", "pentest", "red team", "blue team",
-    "authentication", "identity management", "iam ", "pam ", "privileged access",
-    "zero trust", "firewall", "intrusion detection", "ids ", "ips ",
+    # identity and access
+    "authentication", "identity management", "identity and access",
+    "access management", "iam ", "pam ", "privileged access",
+    # network / perimeter
+    "zero trust", "ztna", "firewall", "intrusion detection", "ids ", "ips ",
+    "sase ", "sse ", "casb ",
+    # posture / exposure
+    "attack surface", "exposure management", "security posture",
+    "vulnerability management", "patch management",
+    # operations
+    "security operations", "security orchestration", "soar ", "threat hunting",
+    "security platform", "security vendor",
     # compliance/regulatory in security context
     "data protection", "privacy regulation", "gdpr", "ccpa", "hipaa",
     "sox compliance", "pci dss", "fedramp",
-    # security product categories
-    "antivirus", "anti-virus", "endpoint protection", "threat hunting",
-    "vulnerability management", "patch management", "security operations",
-    "security orchestration", "soar ", "deception technology",
-    "secure access", "sase ", "sse ", "casb ",
+    # other categories
+    "antivirus", "anti-virus", "endpoint protection",
+    "deception technology", "secure access",
 ])
 
 # Company/product names that are unambiguously security vendors
