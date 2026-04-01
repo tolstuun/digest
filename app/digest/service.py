@@ -22,7 +22,10 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.digest.filters import should_include_in_companies_business
+from app.digest.filters import (
+    should_include_in_companies_business,
+    should_include_in_product_updates,
+)
 from app.models.digest_entry import DigestEntry
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
@@ -33,8 +36,8 @@ from app.models.story_facts import StoryFacts
 
 logger = logging.getLogger(__name__)
 
-# The only section assembled in Phase 4A.
 SECTION_NAME = "companies_business"
+PRODUCT_UPDATES_SECTION = "product_updates"
 
 # Maximum entries per digest run. Explicit in code; can be overridden per call.
 MAX_ENTRIES_DEFAULT = 20
@@ -131,12 +134,21 @@ def assemble_digest(
         assessment, cluster, rep_story, rep_facts = t
         if not assessment.include_in_digest:
             return False
+        source_name: Optional[str] = None
+        if rep_story and rep_story.source_id:
+            source = db.get(Source, rep_story.source_id)
+            source_name = source.name if source else None
+
         if section_name == SECTION_NAME:
-            source_name: Optional[str] = None
-            if rep_story and rep_story.source_id:
-                source = db.get(Source, rep_story.source_id)
-                source_name = source.name if source else None
             return should_include_in_companies_business(
+                event_type=cluster.event_type,
+                title=rep_story.title if rep_story else None,
+                summary_en=rep_facts.canonical_summary_en if rep_facts else None,
+                company_names=rep_facts.company_names if rep_facts else None,
+                source_name=source_name,
+            )
+        if section_name == PRODUCT_UPDATES_SECTION:
+            return should_include_in_product_updates(
                 event_type=cluster.event_type,
                 title=rep_story.title if rep_story else None,
                 summary_en=rep_facts.canonical_summary_en if rep_facts else None,

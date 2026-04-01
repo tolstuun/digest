@@ -1,27 +1,31 @@
 """
-Relevance filters for the companies_business digest section.
+Relevance filters for digest sections.
 
 All logic is explicit in code — no hidden LLM rules.
 
-Entry point: should_include_in_companies_business(event_type, title, summary_en, company_names, source_name)
+Sections implemented here:
+  companies_business — funding, M&A, earnings, market moves of cybersecurity vendors.
+  product_updates    — meaningful cybersecurity product launches and major feature releases.
 
-Filtering pipeline (in order):
+companies_business pipeline (in order):
   1. Business event type gate — allowlist of business-relevant event types.
   2. Content security signal — keyword or vendor in story text/company list.
      Source name alone is NOT sufficient; the story itself must carry the signal.
   3. Generic tech/consumer noise denylist — block off-topic stories even when
      a security keyword happens to appear incidentally.
 
-Note on section scope:
-  This filter is intentionally strict and covers only the companies_business
-  section (funding, M&A, earnings, market moves of cybersecurity vendors).
-  Incidents and regulation will be handled as separate sections in future;
-  do not relax this filter to accommodate those story types.
+product_updates pipeline (in order):
+  1. Event type gate — product_launch only.
+  2. Positive product signal — explicit launch/release/capability keyword required.
+  3. Trivial-update denylist — minor updates, bug fixes, patches, UI tweaks blocked.
+  4. Content security signal — same as companies_business (keyword or vendor).
+  5. Generic tech/consumer noise denylist — same as companies_business.
 
-DB-aware helper: cluster_passes_companies_business_gate(db, cluster)
-  Loads rep story/facts/source from the database and delegates to
-  should_include_in_companies_business.  Used to gate expensive LLM stages
-  (assess, digest_writer) before they run.
+DB-aware helpers:
+  cluster_passes_companies_business_gate(db, cluster)
+  cluster_passes_product_updates_gate(db, cluster)
+  Both load rep story/facts/source from the database and delegate to the
+  appropriate should_include_* function.  Used to gate expensive LLM stages.
 """
 from typing import Optional, TYPE_CHECKING
 
@@ -430,6 +434,129 @@ def cluster_passes_companies_business_gate(db: "Session", cluster: "EventCluster
                 source_name = source.name if source else None
 
     return should_include_in_companies_business(
+        event_type=cluster.event_type,
+        title=rep_story.title if rep_story else None,
+        summary_en=rep_facts.canonical_summary_en if rep_facts else None,
+        company_names=rep_facts.company_names if rep_facts else None,
+        source_name=source_name,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# product_updates section
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Positive product-launch signal — at least one of these must appear in
+# title or summary to qualify a story as a meaningful product event.
+_PRODUCT_LAUNCH_SIGNALS: frozenset[str] = frozenset([
+    "launches", "launch", "launched",
+    "introduces", "introduced",
+    "unveils", "unveiled",
+    "releases", "released", "release",
+    "announces", "announced",          # only when paired with a product noun below
+    "new platform", "new product", "new solution", "new module", "new capability",
+    "new feature",
+    "expands platform", "platform expansion",
+    "adds capability", "adds support", "adds integration",
+    "general availability", "ga release", "now available",
+    "integration with",                # meaningful integrations count
+])
+
+# Trivial-update denylist — any of these phrases indicate a minor, non-newsworthy
+# update that should not appear in the product_updates section.
+_TRIVIAL_UPDATE_SIGNALS: frozenset[str] = frozenset([
+    "minor update",
+    "bug fix", "bugfix", "bug fixes",
+    "patch release", "security patch", "hotfix", "hot fix",
+    "ui improvement", "ui tweak", "ui change",
+    "cosmetic change", "cosmetic update",
+    "documentation update", "docs update",
+    "version bump",
+])
+
+
+def _has_product_launch_signal(title: Optional[str], summary_en: Optional[str]) -> bool:
+    """Return True if the story text contains at least one positive product-launch term."""
+    combined = f"{title or ''} {summary_en or ''}".strip()
+    if not combined:
+        return False
+    return _text_contains_any(combined, _PRODUCT_LAUNCH_SIGNALS)
+
+
+def is_trivial_update(title: Optional[str], summary_en: Optional[str]) -> bool:
+    """Return True if the story is a minor/trivial update that should be excluded."""
+    combined = f"{title or ''} {summary_en or ''}".strip()
+    if not combined:
+        return False
+    return _text_contains_any(combined, _TRIVIAL_UPDATE_SIGNALS)
+
+
+def should_include_in_product_updates(
+    event_type: Optional[str],
+    title: Optional[str],
+    summary_en: Optional[str],
+    company_names: Optional[list[str]],
+    source_name: Optional[str],
+) -> bool:
+    """
+    Combined relevance gate for the product_updates section.
+
+    Returns True only when:
+      1. event_type is product_launch
+      2. title/summary contains an explicit product launch/release signal
+      3. title/summary does NOT contain a trivial-update signal
+      4. the story content carries an explicit cybersecurity signal
+         (keyword or known vendor — source name alone is not sufficient)
+      5. the story is not generic consumer/tech noise
+         (unless a known security vendor is in company_names)
+    """
+    if (event_type or "").lower() != "product_launch":
+        return False
+
+    if not _has_product_launch_signal(title, summary_en):
+        return False
+
+    if is_trivial_update(title, summary_en):
+        return False
+
+    if not _has_content_security_signal(title, summary_en, company_names):
+        return False
+
+    if not _company_names_have_security_vendor(company_names):
+        if is_generic_noise(title, summary_en):
+            return False
+
+    return True
+
+
+def cluster_passes_product_updates_gate(db: "Session", cluster: "EventCluster") -> bool:
+    """
+    Load cluster data from the database and run should_include_in_product_updates.
+
+    Used before expensive LLM stages to skip clusters that will not survive
+    the product_updates relevance gate at assembly time.
+    """
+    from app.models.source import Source
+    from app.models.story import Story
+    from app.models.story_facts import StoryFacts
+
+    rep_story = None
+    rep_facts = None
+    source_name: Optional[str] = None
+
+    if cluster.representative_story_id:
+        rep_story = db.get(Story, cluster.representative_story_id)
+        if rep_story:
+            rep_facts = (
+                db.query(StoryFacts)
+                .filter_by(story_id=rep_story.id)
+                .first()
+            )
+            if rep_story.source_id:
+                source = db.get(Source, rep_story.source_id)
+                source_name = source.name if source else None
+
+    return should_include_in_product_updates(
         event_type=cluster.event_type,
         title=rep_story.title if rep_story else None,
         summary_en=rep_facts.canonical_summary_en if rep_facts else None,

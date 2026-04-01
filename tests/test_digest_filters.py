@@ -1,13 +1,15 @@
 """
-Tests for digest relevance filters (companies_business section).
+Tests for digest relevance filters (companies_business and product_updates sections).
 
 Pure logic tests — no DB, no LLM, no network.
 
 Design notes (reflected in tests):
   - companies_business is intentionally strict: only genuine cybersecurity
     business news (funding, M&A, earnings, market moves of security vendors).
-  - A security-focused source alone is NOT sufficient to pass; the story
-    content must carry an explicit cybersecurity signal.
+  - product_updates covers meaningful cybersecurity product launches and major
+    feature releases; minor updates, patches, and UI tweaks are excluded.
+  - A security-focused source alone is NOT sufficient to pass either filter;
+    the story content must carry an explicit cybersecurity signal.
   - Incidents and regulation are out of scope here; they will get their own
     sections later.
 """
@@ -20,7 +22,9 @@ from app.digest.filters import (
     is_business_eligible,
     is_generic_noise,
     is_security_relevant,
+    is_trivial_update,
     should_include_in_companies_business,
+    should_include_in_product_updates,
 )
 
 
@@ -519,4 +523,134 @@ def test_generic_bigtech_no_security_context_excluded():
         summary_en="Strong ecommerce and AWS compute growth drove the results.",
         company_names=["Amazon"],
         source_name="Bloomberg",
+    ) is False
+
+
+# ── is_trivial_update ─────────────────────────────────────────────────────────
+
+def test_bug_fix_is_trivial():
+    assert is_trivial_update(title="Bug fix release for v2.3.1", summary_en="Fixes a crash on startup.") is True
+
+
+def test_minor_update_is_trivial():
+    assert is_trivial_update(title="Minor update to the dashboard", summary_en="Small improvements.") is True
+
+
+def test_patch_release_is_trivial():
+    assert is_trivial_update(title="Patch release 1.2.4", summary_en="Security patch for TLS library.") is True
+
+
+def test_ui_tweak_is_trivial():
+    assert is_trivial_update(title="UI improvement in admin panel", summary_en="Cosmetic change to the sidebar.") is True
+
+
+def test_major_product_launch_not_trivial():
+    assert is_trivial_update(
+        title="CrowdStrike launches new XDR platform",
+        summary_en="The platform introduces AI-driven threat detection and response.",
+    ) is False
+
+
+def test_none_inputs_not_trivial():
+    assert is_trivial_update(title=None, summary_en=None) is False
+
+
+# ── should_include_in_product_updates ────────────────────────────────────────
+
+def test_palo_alto_product_launch_included():
+    """Palo Alto Networks product launch with clear security signal must pass."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="Palo Alto Networks launches next-gen SASE platform",
+        summary_en="The new platform introduces zero trust network access and cloud security capabilities.",
+        company_names=["Palo Alto Networks"],
+        source_name="SecurityWeek",
+    ) is True
+
+
+def test_crowdstrike_product_launch_included():
+    """CrowdStrike product release must pass."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="CrowdStrike releases new endpoint security module",
+        summary_en="The module adds AI-driven threat detection and response to the Falcon platform.",
+        company_names=["CrowdStrike"],
+        source_name="Dark Reading",
+    ) is True
+
+
+def test_security_product_general_availability_included():
+    """Security product reaching GA must pass."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="Wiz unveils cloud security posture management solution",
+        summary_en="Now available for enterprise customers, the new product expands platform coverage.",
+        company_names=["Wiz"],
+        source_name="TechCrunch",
+    ) is True
+
+
+def test_adds_small_feature_excluded():
+    """Minor feature addition without clear product launch signal must be blocked."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="SentinelOne adds small dashboard widget",
+        summary_en="A minor update to the admin interface. Bug fix included.",
+        company_names=["SentinelOne"],
+        source_name="SecurityWeek",
+    ) is False
+
+
+def test_trivial_patch_excluded():
+    """Patch release must be blocked even from a security vendor."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="Patch release 3.1.2 for Fortinet FortiOS",
+        summary_en="This patch release fixes a known vulnerability in the authentication module.",
+        company_names=["Fortinet"],
+        source_name="Dark Reading",
+    ) is False
+
+
+def test_generic_ai_product_no_security_context_excluded():
+    """Generic AI product launch without security context must be blocked."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="OpenAI launches new foundation model",
+        summary_en="The model introduces multimodal capabilities for productivity apps.",
+        company_names=["OpenAI"],
+        source_name="TechCrunch",
+    ) is False
+
+
+def test_wrong_event_type_excluded():
+    """Non product_launch event type must be blocked regardless of content."""
+    assert should_include_in_product_updates(
+        event_type="funding",
+        title="CrowdStrike launches new XDR platform",
+        summary_en="The platform introduces AI-driven threat detection.",
+        company_names=["CrowdStrike"],
+        source_name="Dark Reading",
+    ) is False
+
+
+def test_no_launch_signal_excluded():
+    """Security vendor story with no product launch keyword must be blocked."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="CrowdStrike cybersecurity news",
+        summary_en="The company continues to invest in endpoint security.",
+        company_names=["CrowdStrike"],
+        source_name="Dark Reading",
+    ) is False
+
+
+def test_no_security_signal_excluded():
+    """Product launch story with no security signal must be blocked."""
+    assert should_include_in_product_updates(
+        event_type="product_launch",
+        title="Acme Corp launches new productivity platform",
+        summary_en="The platform introduces new collaboration and note-taking capabilities.",
+        company_names=["Acme Corp"],
+        source_name="Forbes",
     ) is False
