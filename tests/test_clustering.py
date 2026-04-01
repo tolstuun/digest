@@ -25,9 +25,15 @@ def _make_story(
     title: str = "Acme Corp Raises $50M",
 ) -> Story:
     """Create a minimal Source → RawItem → Story chain."""
-    source = Source(name="Feed", type="rss", url="https://example.com/feed", enabled=True)
-    db.add(source)
-    db.flush()
+    source = (
+        db.query(Source)
+        .filter_by(name="Feed", url="https://example.com/feed")
+        .first()
+    )
+    if source is None:
+        source = Source(name="Feed", type="rss", url="https://example.com/feed", enabled=True)
+        db.add(source)
+        db.flush()
 
     ri = RawItem(
         source_id=source.id,

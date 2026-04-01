@@ -1,7 +1,7 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -27,7 +27,26 @@ def get_source(source_id: uuid.UUID, db: Session = Depends(get_db)) -> Source:
 
 
 @router.post("/", response_model=SourceOut, status_code=status.HTTP_201_CREATED)
-def create_source(data: SourceCreate, db: Session = Depends(get_db)) -> Source:
+def create_source(
+    data: SourceCreate,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> Source:
+    # Return existing row if name+url already present (idempotent create).
+    existing = (
+        db.query(Source)
+        .filter(Source.name == data.name, Source.url == data.url)
+        .first()
+    )
+    if existing is not None:
+        logger.info(
+            "Duplicate source request — returning existing id=%s name=%r",
+            existing.id,
+            existing.name,
+        )
+        response.status_code = status.HTTP_200_OK
+        return existing
+
     source = Source(**data.model_dump())
     db.add(source)
     db.commit()

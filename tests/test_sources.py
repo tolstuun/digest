@@ -152,3 +152,54 @@ def test_patch_source_not_found(client):
         "/sources/00000000-0000-0000-0000-000000000000", json={"priority": 1}
     )
     assert response.status_code == 404
+
+
+# ── duplicate create ──────────────────────────────────────────────────────────
+
+def test_duplicate_post_returns_existing_row(client):
+    """Second POST with same name+url returns the original row with 200."""
+    first = _make_source(client)
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+
+    second = _make_source(client)
+    assert second.status_code == 200
+    assert second.json()["id"] == first_id
+
+
+def test_duplicate_post_no_new_row_created(client):
+    """After a duplicate POST, list still contains exactly one source."""
+    _make_source(client)
+    _make_source(client)
+    sources = client.get("/sources/").json()
+    assert len(sources) == 1
+
+
+def test_duplicate_post_null_url_deduplicated(client):
+    """Two POSTs with same name and url=None are treated as duplicates."""
+    first = client.post("/sources/", json={"name": "NoURL", "type": "manual"})
+    assert first.status_code == 201
+    first_id = first.json()["id"]
+
+    second = client.post("/sources/", json={"name": "NoURL", "type": "manual"})
+    assert second.status_code == 200
+    assert second.json()["id"] == first_id
+
+
+def test_same_url_different_name_not_duplicate(client):
+    """Same url but different name → two distinct rows."""
+    url = "https://example.com/feed/"
+    r1 = client.post("/sources/", json={"name": "Source A", "type": "rss", "url": url})
+    r2 = client.post("/sources/", json={"name": "Source B", "type": "rss", "url": url})
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    assert r1.json()["id"] != r2.json()["id"]
+
+
+def test_same_name_different_url_not_duplicate(client):
+    """Same name but different url → two distinct rows."""
+    r1 = client.post("/sources/", json={"name": "My Feed", "type": "rss", "url": "https://a.com/feed/"})
+    r2 = client.post("/sources/", json={"name": "My Feed", "type": "rss", "url": "https://b.com/feed/"})
+    assert r1.status_code == 201
+    assert r2.status_code == 201
+    assert r1.json()["id"] != r2.json()["id"]
