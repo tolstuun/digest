@@ -26,6 +26,7 @@ class SourceCreate(BaseModel):
     parser_type: Optional[str] = None
     poll_frequency_minutes: Optional[int] = None
     section_scope: Optional[list[str]] = None
+    request_headers: Optional[dict] = None
 
     @field_validator("type")
     @classmethod
@@ -48,6 +49,7 @@ class SourcePatch(BaseModel):
     parser_type: Optional[str] = None
     poll_frequency_minutes: Optional[int] = None
     section_scope: Optional[list[str]] = None
+    request_headers: Optional[dict] = None
 
     @field_validator("type", mode="before")
     @classmethod
@@ -74,6 +76,7 @@ class SourceOut(BaseModel):
     last_success_at: Optional[datetime]
     last_error: Optional[str]
     section_scope: Optional[list[str]]
+    request_headers: Optional[dict]
     created_at: datetime
     updated_at: datetime
 

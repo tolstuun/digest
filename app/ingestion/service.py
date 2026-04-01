@@ -37,7 +37,7 @@ def ingest_source(db: Session, source: Source) -> dict:
         return summary
 
     try:
-        items = parse_feed(source.url)
+        items = parse_feed(source.url, request_headers=source.request_headers or {})
         summary["fetched"] = len(items)
 
         for item in items:
