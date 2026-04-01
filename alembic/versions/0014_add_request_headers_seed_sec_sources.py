@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import bindparam
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "0014"
@@ -20,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 _SEC_URL = "https://data.sec.gov/rss?cik={cik}&type=8-K,10-Q,10-K&count=40"
 
 _SEC_SOURCES = [
-    ("CrowdStrike (SEC EDGAR)",       "0001535527"),
+    ("CrowdStrike (SEC EDGAR)",        "0001535527"),
     ("Palo Alto Networks (SEC EDGAR)", "0001327567"),
     ("SentinelOne (SEC EDGAR)",        "0001583708"),
     ("Fortinet (SEC EDGAR)",           "0001262039"),
@@ -30,8 +31,28 @@ _SEC_SOURCES = [
     ("Okta (SEC EDGAR)",               "0001660134"),
 ]
 
-_SECTION_SCOPE = '["companies_business"]'
-_REQUEST_HEADERS = '{"User-Agent": "security-digest contact@security-digest.example.com"}'
+# Native Python objects — passed through SQLAlchemy's JSONB bind processor.
+_SECTION_SCOPE = ["companies_business"]
+_REQUEST_HEADERS = {"User-Agent": "security-digest contact@security-digest.example.com"}
+
+# Prepared statement with JSONB-typed bindparams.
+# No ::jsonb casts in the SQL — those conflict with SQLAlchemy's :param syntax.
+_INSERT_STMT = sa.text(
+    """
+    INSERT INTO sources
+        (id, name, type, url, enabled, priority, parser_type,
+         poll_frequency_minutes, section_scope, request_headers,
+         created_at, updated_at)
+    VALUES
+        (:id, :name, 'rss', :url, true, 9, 'feedparser',
+         240, :section_scope, :request_headers,
+         now(), now())
+    ON CONFLICT ON CONSTRAINT uq_sources_name_url DO NOTHING
+    """
+).bindparams(
+    bindparam("section_scope", type_=JSONB()),
+    bindparam("request_headers", type_=JSONB()),
+)
 
 
 def upgrade() -> None:
@@ -41,29 +62,15 @@ def upgrade() -> None:
         sa.Column("request_headers", JSONB, nullable=True),
     )
 
-    # 2. Seed SEC EDGAR sources — one INSERT per row, each idempotent via
-    #    ON CONFLICT ON CONSTRAINT uq_sources_name_url DO NOTHING.
+    # 2. Seed SEC EDGAR sources — idempotent via ON CONFLICT DO NOTHING.
     conn = op.get_bind()
     for name, cik in _SEC_SOURCES:
-        url = _SEC_URL.format(cik=cik)
         conn.execute(
-            sa.text(
-                """
-                INSERT INTO sources
-                    (id, name, type, url, enabled, priority, parser_type,
-                     poll_frequency_minutes, section_scope, request_headers,
-                     created_at, updated_at)
-                VALUES
-                    (:id, :name, 'rss', :url, true, 9, 'feedparser',
-                     240, :section_scope::jsonb, :request_headers::jsonb,
-                     now(), now())
-                ON CONFLICT ON CONSTRAINT uq_sources_name_url DO NOTHING
-                """
-            ),
+            _INSERT_STMT,
             {
                 "id": str(uuid.uuid4()),
                 "name": name,
-                "url": url,
+                "url": _SEC_URL.format(cik=cik),
                 "section_scope": _SECTION_SCOPE,
                 "request_headers": _REQUEST_HEADERS,
             },
