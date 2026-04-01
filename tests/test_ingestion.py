@@ -1,9 +1,11 @@
 """
 Tests for RSS ingestion: parsing, raw item persistence, and duplicate avoidance.
 """
-from unittest.mock import patch
+from unittest.mock import call, patch
 
-from app.ingestion.rss import parse_feed_string
+import feedparser
+
+from app.ingestion.rss import parse_feed, parse_feed_string
 from app.ingestion.service import ingest_source
 from app.models.raw_item import RawItem
 from app.models.source import Source
@@ -197,3 +199,69 @@ def test_ingest_endpoint_success(client, db):
 def test_ingest_endpoint_source_not_found(client):
     resp = client.post("/admin/sources/00000000-0000-0000-0000-000000000000/ingest")
     assert resp.status_code == 404
+
+
+# ── request_headers support ───────────────────────────────────────────────────
+
+def test_parse_feed_passes_request_headers():
+    """parse_feed forwards request_headers to feedparser.parse."""
+    headers = {"User-Agent": "test-agent/1.0"}
+    with patch("app.ingestion.rss.feedparser") as mock_fp:
+        mock_fp.parse.return_value = feedparser.parse(SAMPLE_RSS)
+        parse_feed("https://example.com/feed.xml", request_headers=headers)
+        mock_fp.parse.assert_called_once_with(
+            "https://example.com/feed.xml", request_headers=headers
+        )
+
+
+def test_ingest_source_uses_request_headers(db):
+    """ingest_source passes source.request_headers to parse_feed."""
+    headers = {"User-Agent": "security-digest/1.0"}
+    source = Source(
+        name="HeaderFeed",
+        type="rss",
+        url="https://example.com/feed.xml",
+        enabled=True,
+        request_headers=headers,
+    )
+    db.add(source)
+    db.commit()
+    db.refresh(source)
+
+    with patch("app.ingestion.service.parse_feed", return_value=[]) as mock_pf:
+        ingest_source(db, source)
+        mock_pf.assert_called_once_with(
+            "https://example.com/feed.xml", request_headers=headers
+        )
+
+
+def test_sec_edgar_source_items_created(db):
+    """SEC EDGAR source with User-Agent header ingests items correctly."""
+    sec_source = Source(
+        name="CrowdStrike (SEC EDGAR)",
+        type="rss",
+        url="https://data.sec.gov/rss?cik=0001535527&type=8-K,10-Q,10-K&count=40",
+        enabled=True,
+        priority=9,
+        parser_type="feedparser",
+        poll_frequency_minutes=240,
+        section_scope=["companies_business"],
+        request_headers={"User-Agent": "security-digest contact@security-digest.example.com"},
+    )
+    db.add(sec_source)
+    db.commit()
+    db.refresh(sec_source)
+
+    with patch("app.ingestion.service.parse_feed", return_value=_parsed_items()) as mock_pf:
+        result = ingest_source(db, sec_source)
+
+    # Correct URL and User-Agent header forwarded
+    mock_pf.assert_called_once_with(
+        sec_source.url,
+        request_headers={"User-Agent": "security-digest contact@security-digest.example.com"},
+    )
+    # Items are stored
+    assert result["error"] is None
+    assert result["new"] == 2
+    stored = db.query(RawItem).filter_by(source_id=sec_source.id).all()
+    assert len(stored) == 2

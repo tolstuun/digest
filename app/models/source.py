@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import UUID, Boolean, Integer, JSON, String, Text, DateTime, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -44,6 +45,7 @@ class Source(Base):
     )
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     section_scope: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    request_headers: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )

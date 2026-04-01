@@ -71,10 +71,14 @@ def _parse(parsed) -> list[RawFeedItem]:
     return items
 
 
-def parse_feed(url: str) -> list[RawFeedItem]:
-    """Fetch and parse a remote RSS/Atom feed by URL."""
+def parse_feed(url: str, request_headers: Optional[dict] = None) -> list[RawFeedItem]:
+    """Fetch and parse a remote RSS/Atom feed by URL.
+
+    request_headers: optional dict of HTTP headers forwarded to feedparser
+    (e.g. {"User-Agent": "..."} required by SEC EDGAR).
+    """
     logger.info("Fetching RSS feed url=%s", url)
-    parsed = feedparser.parse(url)
+    parsed = feedparser.parse(url, request_headers=request_headers or {})
     items = _parse(parsed)
     logger.info("Parsed %d items from url=%s", len(items), url)
     return items
