@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import UUID, Boolean, Integer, JSON, String, Text, DateTime
+from sqlalchemy import UUID, Boolean, Integer, JSON, String, Text, DateTime, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -14,6 +14,12 @@ def _utcnow() -> datetime:
 
 class Source(Base):
     __tablename__ = "sources"
+    __table_args__ = (
+        # NULLS NOT DISTINCT treats two rows with the same name and url=NULL
+        # as duplicates, matching the application-level deduplication logic.
+        UniqueConstraint("name", "url", name="uq_sources_name_url",
+                         postgresql_nulls_not_distinct=True),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
