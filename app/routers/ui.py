@@ -18,6 +18,9 @@ Routes:
   POST /ui/digest-pages/{page_id}/publish-telegram   publish to Telegram, redirect back
   GET  /ui/pipeline-runs                             pipeline runs list + step detail
   POST /ui/pipeline-runs/run-daily                   trigger daily pipeline, redirect back
+  GET  /ui/review?date=YYYY-MM-DD                    editorial review: clusters + digest entries
+  POST /ui/clusters/{id}/feedback                    record feedback override for a cluster
+  POST /ui/digest-entries/{id}/mark-junk             mark cluster as noise from digest entry
   GET  /ui/config                                    read-only config view
 """
 from __future__ import annotations
@@ -25,7 +28,8 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date as date_cls
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -37,9 +41,12 @@ from sqlalchemy.orm import Session
 from app.clustering.service import cluster_story
 from app.config import settings
 from app.database import get_db
+from app.digest.feedback import VALID_ACTIONS, get_all_feedback, record_feedback
 from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
 from app.digest_writer.service import write_digest_entries
 from app.ingestion.service import ingest_source
+from app.models.cluster_feedback import ClusterFeedback
+from app.models.digest_entry import DigestEntry
 from app.models.digest_page import DigestPage
 from app.models.digest_publication import DigestPublication
 from app.models.digest_run import DigestRun
@@ -297,7 +304,7 @@ def ui_digests(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         {
             "active": "digests",
             "runs": rows,
-            "today": date.today().isoformat(),
+            "today": date_cls.today().isoformat(),
             "telegram_enabled": settings.telegram.enabled,
             "flash": _flash(request),
         },
@@ -310,7 +317,7 @@ def ui_assemble_digest(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     try:
-        parsed_date = date.fromisoformat(digest_date)
+        parsed_date = date_cls.fromisoformat(digest_date)
     except ValueError:
         return _redirect("/ui/digests", "err", f"Invalid date: {digest_date}")
     try:
@@ -418,7 +425,7 @@ def ui_pipeline_runs(request: Request, db: Session = Depends(get_db)) -> HTMLRes
         {
             "active": "pipeline-runs",
             "runs": rows,
-            "today": date.today().isoformat(),
+            "today": date_cls.today().isoformat(),
             "telegram_enabled": settings.telegram.enabled,
             "flash": _flash(request),
         },
@@ -432,7 +439,7 @@ def ui_run_daily_pipeline(
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     try:
-        parsed_date = date.fromisoformat(run_date)
+        parsed_date = date_cls.fromisoformat(run_date)
     except ValueError:
         return _redirect("/ui/pipeline-runs", "err", f"Invalid date: {run_date}")
 
@@ -459,6 +466,190 @@ def ui_run_daily_pipeline(
     except Exception as exc:  # noqa: BLE001
         logger.exception("UI run-daily failed date=%s", run_date)
         return _redirect("/ui/pipeline-runs", "err", f"Pipeline failed: {exc}")
+
+
+# ── editorial review ──────────────────────────────────────────────────────────
+
+
+@router.get("/review", response_class=HTMLResponse)
+def ui_review(
+    request: Request,
+    date: Optional[str] = None,
+    db: Session = Depends(get_db),
+) -> HTMLResponse:
+    """
+    Editorial review page.
+
+    Shows all assessed clusters for a given date with current feedback state,
+    story/raw-item linkage, a feedback action form, and assembled digest entries
+    with a mark-junk button.
+    """
+    selected_date = date  # may be None (show blank date selector)
+    clusters: list[dict] = []
+    digest_entries: list[dict] = []
+
+    if selected_date:
+        try:
+            parsed_date = date_cls.fromisoformat(selected_date)
+        except (ValueError, AttributeError):
+            parsed_date = None
+
+        if parsed_date is not None:
+            # Load all feedback once
+            all_feedback = get_all_feedback(db)
+
+            # Load all assessments (any section) for clusters whose effective date matches
+            all_assessments = db.query(EventClusterAssessment).all()
+            assessment_map: dict[uuid.UUID, EventClusterAssessment] = {
+                a.event_cluster_id: a for a in all_assessments
+            }
+
+            # Load all clusters
+            all_clusters = db.query(EventCluster).all()
+
+            for cluster in all_clusters:
+                assessment = assessment_map.get(cluster.id)
+                if assessment is None:
+                    continue
+
+                # Resolve representative story
+                rep_story: Optional[Story] = None
+                if cluster.representative_story_id:
+                    rep_story = db.get(Story, cluster.representative_story_id)
+
+                # Effective date check
+                effective = rep_story.published_at.date() if (rep_story and rep_story.published_at) else cluster.created_at.date()
+                if effective != parsed_date:
+                    continue
+
+                # Load all stories assigned to this cluster (for linkage display)
+                cluster_stories = (
+                    db.query(Story)
+                    .filter(Story.event_cluster_id == cluster.id)
+                    .order_by(Story.published_at.desc())
+                    .limit(5)
+                    .all()
+                )
+                story_rows = []
+                for s in cluster_stories:
+                    source_name: Optional[str] = None
+                    if s.source_id:
+                        src = db.get(Source, s.source_id)
+                        source_name = src.name if src else None
+                    story_rows.append({
+                        "id": s.id,
+                        "title": s.title,
+                        "url": s.canonical_url or s.url,
+                        "raw_item_id": s.raw_item_id,
+                        "published_at": s.published_at,
+                        "source_name": source_name,
+                    })
+
+                feedback = all_feedback.get(cluster.id)
+
+                clusters.append({
+                    "cluster_id": cluster.id,
+                    "event_type": cluster.event_type,
+                    "title": rep_story.title if rep_story else None,
+                    "primary_section": assessment.primary_section,
+                    "final_score": assessment.final_score,
+                    "include_in_digest": assessment.include_in_digest,
+                    "stories": story_rows,
+                    "feedback": feedback,
+                })
+
+            # Sort by score desc
+            clusters.sort(key=lambda r: r["final_score"] or 0.0, reverse=True)
+
+            # Load digest entries for this date (all sections)
+            runs_for_date = (
+                db.query(DigestRun)
+                .filter(DigestRun.digest_date == parsed_date)
+                .all()
+            )
+            run_ids = [r.id for r in runs_for_date]
+            run_section_map = {r.id: r.section_name for r in runs_for_date}
+            if run_ids:
+                entries = (
+                    db.query(DigestEntry)
+                    .filter(DigestEntry.digest_run_id.in_(run_ids))
+                    .order_by(DigestEntry.rank)
+                    .all()
+                )
+                for e in entries:
+                    digest_entries.append({
+                        "entry_id": e.id,
+                        "section_name": run_section_map.get(e.digest_run_id, "—"),
+                        "rank": e.rank,
+                        "title": e.title,
+                        "source_url": e.source_url,
+                        "final_score": e.final_score,
+                        "cluster_id": e.event_cluster_id,
+                    })
+
+    return templates.TemplateResponse(
+        request,
+        "ui/review.html",
+        {
+            "active": "review",
+            "selected_date": selected_date or "",
+            "clusters": clusters,
+            "digest_entries": digest_entries,
+            "flash": _flash(request),
+        },
+    )
+
+
+@router.post("/clusters/{cluster_id}/feedback")
+def ui_cluster_feedback(
+    cluster_id: uuid.UUID,
+    action: str = Form(...),
+    section: Optional[str] = Form(None),
+    reason: Optional[str] = Form(None),
+    redirect_date: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    cluster = db.get(EventCluster, cluster_id)
+    redirect_url = f"/ui/review?date={redirect_date}" if redirect_date else "/ui/review"
+    if cluster is None:
+        return _redirect(redirect_url, "err", "Cluster not found")
+    if action not in VALID_ACTIONS:
+        return _redirect(redirect_url, "err", f"Invalid action: {action!r}")
+    # Blank string → None
+    section = section or None
+    reason = reason or None
+    if action == "section_override" and not section:
+        return _redirect(redirect_url, "err", "section_override requires a section")
+    try:
+        record_feedback(db, cluster_id, action=action, section=section, reason=reason)
+        msg = f"Feedback recorded: {action}" + (f" → {section}" if section else "")
+        logger.info("UI feedback cluster=%s action=%s section=%s", cluster_id, action, section)
+        return _redirect(redirect_url, "ok", msg)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("UI feedback failed cluster=%s", cluster_id)
+        return _redirect(redirect_url, "err", f"Feedback failed: {exc}")
+
+
+@router.post("/digest-entries/{entry_id}/mark-junk")
+def ui_mark_junk(
+    entry_id: uuid.UUID,
+    redirect_date: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Mark the cluster behind a digest entry as noise (always hide)."""
+    entry = db.get(DigestEntry, entry_id)
+    redirect_url = f"/ui/review?date={redirect_date}" if redirect_date else "/ui/review"
+    if entry is None:
+        return _redirect(redirect_url, "err", "Digest entry not found")
+    if entry.event_cluster_id is None:
+        return _redirect(redirect_url, "err", "Entry has no linked cluster")
+    try:
+        record_feedback(db, entry.event_cluster_id, action="noise", reason="marked junk from digest")
+        logger.info("UI mark-junk entry=%s cluster=%s", entry_id, entry.event_cluster_id)
+        return _redirect(redirect_url, "ok", "Cluster marked as noise (junk)")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("UI mark-junk failed entry=%s", entry_id)
+        return _redirect(redirect_url, "err", f"Mark junk failed: {exc}")
 
 
 # ── config ────────────────────────────────────────────────────────────────────
