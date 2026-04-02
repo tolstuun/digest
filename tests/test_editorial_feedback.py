@@ -6,6 +6,7 @@ Covers:
   - assemble_digest respects exclude, noise, include, section_override
   - mark-junk UI endpoint records noise feedback
   - /ui/clusters/{id}/feedback endpoint records feedback and redirects
+  - /ui/review editorial inbox: full candidate pool, exclusion reasons, view filters
 """
 import hashlib
 from datetime import date, datetime, timezone
@@ -23,6 +24,8 @@ from app.digest.feedback import (
 )
 from app.digest.service import SECTION_NAME, assemble_digest
 from app.models.cluster_feedback import ClusterFeedback
+from app.models.digest_entry import DigestEntry
+from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
 from app.models.raw_item import RawItem
@@ -344,9 +347,6 @@ def test_ui_cluster_feedback_section_override_requires_section(client, db):
 
 
 def test_ui_mark_junk_records_noise(client, db):
-    from app.models.digest_entry import DigestEntry
-    from app.models.digest_run import DigestRun
-
     cluster = _make_chain(db, suffix="mjunk1", include_in_digest=True)
 
     # Create a digest run + entry pointing at this cluster
@@ -394,3 +394,180 @@ def test_ui_review_page_with_date(client, db):
     resp = client.get("/ui/review?date=2026-03-24")
     assert resp.status_code == 200
     assert b"2026-03-24" in resp.content
+
+
+# ── editorial inbox: full candidate pool tests ────────────────────────────────
+
+
+def test_review_shows_excluded_cluster(client, db):
+    """Review page shows clusters where include_in_digest=False (excluded by LLM)."""
+    _make_chain(db, suffix="revexcl1", include_in_digest=False)
+    resp = client.get("/ui/review?date=2026-03-24")
+    assert resp.status_code == 200
+    # Excluded reason badge should appear
+    assert b"excluded: LLM assessment" in resp.content
+
+
+def test_review_shows_unassessed_cluster(client, db):
+    """Review page shows clusters with no assessment at all."""
+    # Create cluster without assessment
+    source = _make_source(db)
+    content = "unassessed-cluster-story"
+    ri = RawItem(
+        source_id=source.id,
+        content_hash=hashlib.sha256(content.encode()).hexdigest(),
+        title="Unassessed story",
+        url="https://example.com/unassessed",
+        raw_payload={"title": "Unassessed story"},
+    )
+    db.add(ri)
+    db.flush()
+    story = Story(
+        raw_item_id=ri.id,
+        source_id=source.id,
+        title="Unassessed story",
+        url=ri.url,
+        published_at=_dt(TARGET_DATE),
+    )
+    db.add(story)
+    db.flush()
+    cluster = EventCluster(
+        cluster_key="unassessed-cluster-key-test",
+        event_type="funding",
+        representative_story_id=story.id,
+    )
+    db.add(cluster)
+    db.commit()
+
+    resp = client.get("/ui/review?date=2026-03-24")
+    assert resp.status_code == 200
+    assert b"not assessed" in resp.content
+
+
+def test_review_exclusion_reason_filter_blocked(client, db):
+    """Cluster that passes LLM but fails keyword filter shows filter exclusion reason."""
+    # Use a title/summary with no cybersecurity keywords — will fail companies_business filter
+    _make_chain(
+        db, suffix="filtblock1",
+        include_in_digest=True,
+        summary_en="A random company raised money for a generic purpose.",
+    )
+    resp = client.get("/ui/review?date=2026-03-24")
+    assert resp.status_code == 200
+    assert b"excluded: companies_business filter" in resp.content
+
+
+def test_review_exclusion_reason_editorial_feedback(client, db):
+    """Cluster with exclude feedback shows editorial feedback exclusion reason."""
+    cluster = _make_chain(db, suffix="revfbexcl1", include_in_digest=True)
+    record_feedback(db, cluster.id, action="exclude", reason="off topic")
+    resp = client.get("/ui/review?date=2026-03-24")
+    assert resp.status_code == 200
+    assert b"excluded: editorial feedback" in resp.content
+
+
+def test_review_view_filter_included(client, db):
+    """?view=included shows only in-digest clusters."""
+    cluster = _make_chain(db, suffix="viewinc1")
+    # Manually create a digest run+entry for this cluster
+    run = DigestRun(
+        digest_date=TARGET_DATE,
+        section_name=SECTION_NAME,
+        status="assembled",
+        total_candidate_clusters=1,
+        total_included_clusters=1,
+        generated_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    entry = DigestEntry(
+        digest_run_id=run.id,
+        event_cluster_id=cluster.id,
+        rank=1,
+        final_score=0.80,
+        title="In digest",
+    )
+    db.add(entry)
+    # Also make an excluded cluster
+    _make_chain(db, suffix="viewexcl1", include_in_digest=False)
+    db.commit()
+
+    resp = client.get("/ui/review?date=2026-03-24&view=included")
+    assert resp.status_code == 200
+    # included cluster shows "in digest" badge; excluded cluster should NOT appear
+    assert b"in digest" in resp.content
+    assert b"excluded: LLM assessment" not in resp.content
+
+
+def test_review_view_filter_excluded(client, db):
+    """?view=excluded shows only non-digest clusters."""
+    _make_chain(db, suffix="viewexcl2", include_in_digest=False)
+    resp = client.get("/ui/review?date=2026-03-24&view=excluded")
+    assert resp.status_code == 200
+    assert b"excluded: LLM assessment" in resp.content
+
+
+def test_review_view_filter_unreviewed(client, db):
+    """?view=unreviewed shows clusters with no feedback AND not in digest."""
+    # Unreviewed excluded cluster
+    _make_chain(db, suffix="unrev1", include_in_digest=False)
+    # Reviewed cluster (has feedback)
+    reviewed = _make_chain(db, suffix="unrev2", include_in_digest=False)
+    record_feedback(db, reviewed.id, action="noise")
+
+    resp = client.get("/ui/review?date=2026-03-24&view=unreviewed")
+    assert resp.status_code == 200
+    # "unrev1" cluster has no feedback and is not in digest — should appear
+    assert b"excluded" in resp.content
+
+
+def test_review_unreviewed_excludes_in_digest(client, db):
+    """?view=unreviewed does NOT show clusters already in digest, even without feedback."""
+    cluster = _make_chain(db, suffix="unrevdig1")
+    run = DigestRun(
+        digest_date=TARGET_DATE,
+        section_name=SECTION_NAME,
+        status="assembled",
+        total_candidate_clusters=1,
+        total_included_clusters=1,
+        generated_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.flush()
+    db.add(DigestEntry(
+        digest_run_id=run.id,
+        event_cluster_id=cluster.id,
+        rank=1,
+        final_score=0.80,
+        title="In digest",
+    ))
+    db.commit()
+
+    resp = client.get("/ui/review?date=2026-03-24&view=unreviewed")
+    assert resp.status_code == 200
+    # in-digest cluster without feedback should NOT appear in unreviewed
+    assert b"In digest" not in resp.content
+
+
+def test_review_feedback_on_excluded_cluster(client, db):
+    """Feedback can be applied to a currently excluded cluster."""
+    cluster = _make_chain(db, suffix="fbexcl2", include_in_digest=False)
+    resp = client.post(
+        f"/ui/clusters/{cluster.id}/feedback",
+        data={"action": "include", "section": "", "reason": "actually relevant", "redirect_date": "2026-03-24", "redirect_view": "excluded"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    fb = get_latest_feedback(db, cluster.id)
+    assert fb is not None
+    assert fb.action == "include"
+    assert fb.reason == "actually relevant"
+
+
+def test_review_raw_item_linkage_visible(client, db):
+    """Review page shows raw_item_id in story linkage for each cluster."""
+    _make_chain(db, suffix="rawlink1")
+    resp = client.get("/ui/review?date=2026-03-24")
+    assert resp.status_code == 200
+    # The linkage section heading should appear
+    assert b"raw" in resp.content.lower()
