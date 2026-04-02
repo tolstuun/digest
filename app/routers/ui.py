@@ -42,7 +42,11 @@ from app.clustering.service import cluster_story
 from app.config import settings
 from app.database import get_db
 from app.digest.feedback import VALID_ACTIONS, get_all_feedback, record_feedback
-from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
+from app.digest.filters import (
+    should_include_in_companies_business,
+    should_include_in_product_updates,
+)
+from app.digest.service import MAX_ENTRIES_DEFAULT, PRODUCT_UPDATES_SECTION, SECTION_NAME, assemble_digest
 from app.digest_writer.service import write_digest_entries
 from app.ingestion.service import ingest_source
 from app.models.cluster_feedback import ClusterFeedback
@@ -471,22 +475,84 @@ def ui_run_daily_pipeline(
 # ── editorial review ──────────────────────────────────────────────────────────
 
 
+def _compute_exclusion_reason(
+    cluster: EventCluster,
+    assessment: Optional[EventClusterAssessment],
+    rep_story: Optional[Story],
+    rep_facts: Optional[StoryFacts],
+    source_name: Optional[str],
+    feedback,
+    in_digest: bool,
+) -> str:
+    """
+    Compute a human-readable reason why a cluster is/isn't in the digest.
+
+    Priority order matches assemble_digest() logic exactly:
+      1. In digest output → "in digest"
+      2. Feedback suppress → "excluded: editorial feedback (action)"
+      3. Feedback section_override to different section → "redirected to {section}"
+      4. No assessment → "not assessed"
+      5. LLM include_in_digest=False → "excluded: LLM assessment"
+      6. Fails section filter → "excluded: {section} filter" or "excluded: not in section"
+    """
+    if in_digest:
+        return "in digest"
+
+    if feedback is not None:
+        if feedback.action in ("exclude", "noise"):
+            return f"excluded: editorial feedback ({feedback.action})"
+        if feedback.action == "section_override":
+            return f"redirected to {feedback.section or '?'}"
+        if feedback.action == "include":
+            # Forced include but still not in digest — assembly not run yet
+            return "include override (digest not yet assembled)"
+
+    if assessment is None:
+        return "not assessed"
+
+    if not assessment.include_in_digest:
+        return "excluded: LLM assessment"
+
+    # Assessment says include — check which section gate would block it
+    section = assessment.primary_section
+    event_type = cluster.event_type
+    title = rep_story.title if rep_story else None
+    summary_en = rep_facts.canonical_summary_en if rep_facts else None
+    company_names = rep_facts.company_names if rep_facts else None
+
+    if section == SECTION_NAME:
+        if not should_include_in_companies_business(event_type, title, summary_en, company_names, source_name):
+            return "excluded: companies_business filter"
+    elif section == PRODUCT_UPDATES_SECTION:
+        if not should_include_in_product_updates(event_type, title, summary_en, company_names, source_name):
+            return "excluded: product_updates filter"
+    else:
+        return f"excluded: not in section ({section or 'none'})"
+
+    # Passed everything — assembly not yet run, or date mismatch
+    return "pending (digest not assembled)"
+
+
 @router.get("/review", response_class=HTMLResponse)
 def ui_review(
     request: Request,
     date: Optional[str] = None,
+    view: Optional[str] = None,
     db: Session = Depends(get_db),
 ) -> HTMLResponse:
     """
-    Editorial review page.
+    Editorial inbox for a date.
 
-    Shows all assessed clusters for a given date with current feedback state,
-    story/raw-item linkage, a feedback action form, and assembled digest entries
-    with a mark-junk button.
+    Shows the full candidate pool (ALL clusters for the date, including those not
+    included in the digest), with exclusion reasons and feedback controls.
+    Useful for reviewing what was left out and deciding whether to override.
+
+    ?view= filter: all (default) | included | excluded | unreviewed
+    unreviewed = no feedback row AND not in digest output
     """
-    selected_date = date  # may be None (show blank date selector)
+    selected_date = date
+    view = view or "all"
     clusters: list[dict] = []
-    digest_entries: list[dict] = []
 
     if selected_date:
         try:
@@ -495,34 +561,71 @@ def ui_review(
             parsed_date = None
 
         if parsed_date is not None:
-            # Load all feedback once
+            # ── bulk loads to avoid N+1 queries ──────────────────────────────
             all_feedback = get_all_feedback(db)
 
-            # Load all assessments (any section) for clusters whose effective date matches
-            all_assessments = db.query(EventClusterAssessment).all()
             assessment_map: dict[uuid.UUID, EventClusterAssessment] = {
-                a.event_cluster_id: a for a in all_assessments
+                a.event_cluster_id: a
+                for a in db.query(EventClusterAssessment).all()
             }
 
-            # Load all clusters
-            all_clusters = db.query(EventCluster).all()
+            # cluster_ids actually in digest output for this date
+            runs_for_date = (
+                db.query(DigestRun)
+                .filter(DigestRun.digest_date == parsed_date)
+                .all()
+            )
+            run_ids = [r.id for r in runs_for_date]
+            in_digest_cluster_ids: set[uuid.UUID] = set()
+            if run_ids:
+                for e in db.query(DigestEntry).filter(DigestEntry.digest_run_id.in_(run_ids)).all():
+                    if e.event_cluster_id:
+                        in_digest_cluster_ids.add(e.event_cluster_id)
 
-            for cluster in all_clusters:
+            # bulk source cache
+            source_cache: dict[uuid.UUID, Source] = {
+                s.id: s for s in db.query(Source).all()
+            }
+
+            # bulk story_facts cache keyed by story_id
+            facts_cache: dict[uuid.UUID, StoryFacts] = {
+                f.story_id: f for f in db.query(StoryFacts).all()
+            }
+
+            for cluster in db.query(EventCluster).order_by(EventCluster.created_at.desc()).all():
                 assessment = assessment_map.get(cluster.id)
-                if assessment is None:
-                    continue
 
-                # Resolve representative story
+                # Resolve representative story and effective date
                 rep_story: Optional[Story] = None
                 if cluster.representative_story_id:
                     rep_story = db.get(Story, cluster.representative_story_id)
 
-                # Effective date check
-                effective = rep_story.published_at.date() if (rep_story and rep_story.published_at) else cluster.created_at.date()
+                effective = (
+                    rep_story.published_at.date()
+                    if (rep_story and rep_story.published_at)
+                    else cluster.created_at.date()
+                )
                 if effective != parsed_date:
                     continue
 
-                # Load all stories assigned to this cluster (for linkage display)
+                rep_facts: Optional[StoryFacts] = (
+                    facts_cache.get(cluster.representative_story_id)
+                    if cluster.representative_story_id else None
+                )
+                rep_source: Optional[Source] = (
+                    source_cache.get(rep_story.source_id)
+                    if (rep_story and rep_story.source_id) else None
+                )
+                source_name: Optional[str] = rep_source.name if rep_source else None
+
+                feedback = all_feedback.get(cluster.id)
+                in_digest = cluster.id in in_digest_cluster_ids
+
+                exclusion_reason = _compute_exclusion_reason(
+                    cluster, assessment, rep_story, rep_facts, source_name, feedback, in_digest
+                )
+
+                # All stories assigned to this cluster (for linkage)
                 cluster_stories = (
                     db.query(Story)
                     .filter(Story.event_cluster_id == cluster.id)
@@ -532,60 +635,41 @@ def ui_review(
                 )
                 story_rows = []
                 for s in cluster_stories:
-                    source_name: Optional[str] = None
-                    if s.source_id:
-                        src = db.get(Source, s.source_id)
-                        source_name = src.name if src else None
+                    src = source_cache.get(s.source_id) if s.source_id else None
                     story_rows.append({
                         "id": s.id,
                         "title": s.title,
                         "url": s.canonical_url or s.url,
                         "raw_item_id": s.raw_item_id,
                         "published_at": s.published_at,
-                        "source_name": source_name,
+                        "source_name": src.name if src else None,
                     })
-
-                feedback = all_feedback.get(cluster.id)
 
                 clusters.append({
                     "cluster_id": cluster.id,
                     "event_type": cluster.event_type,
                     "title": rep_story.title if rep_story else None,
-                    "primary_section": assessment.primary_section,
-                    "final_score": assessment.final_score,
-                    "include_in_digest": assessment.include_in_digest,
+                    "primary_section": assessment.primary_section if assessment else None,
+                    "final_score": assessment.final_score if assessment else None,
+                    "include_in_digest": assessment.include_in_digest if assessment else None,
+                    "in_digest": in_digest,
+                    "exclusion_reason": exclusion_reason,
                     "stories": story_rows,
                     "feedback": feedback,
                 })
 
-            # Sort by score desc
-            clusters.sort(key=lambda r: r["final_score"] or 0.0, reverse=True)
-
-            # Load digest entries for this date (all sections)
-            runs_for_date = (
-                db.query(DigestRun)
-                .filter(DigestRun.digest_date == parsed_date)
-                .all()
+            # Sort: in-digest first, then by score desc
+            clusters.sort(
+                key=lambda r: (not r["in_digest"], -(r["final_score"] or 0.0))
             )
-            run_ids = [r.id for r in runs_for_date]
-            run_section_map = {r.id: r.section_name for r in runs_for_date}
-            if run_ids:
-                entries = (
-                    db.query(DigestEntry)
-                    .filter(DigestEntry.digest_run_id.in_(run_ids))
-                    .order_by(DigestEntry.rank)
-                    .all()
-                )
-                for e in entries:
-                    digest_entries.append({
-                        "entry_id": e.id,
-                        "section_name": run_section_map.get(e.digest_run_id, "—"),
-                        "rank": e.rank,
-                        "title": e.title,
-                        "source_url": e.source_url,
-                        "final_score": e.final_score,
-                        "cluster_id": e.event_cluster_id,
-                    })
+
+            # Apply view filter
+            if view == "included":
+                clusters = [r for r in clusters if r["in_digest"]]
+            elif view == "excluded":
+                clusters = [r for r in clusters if not r["in_digest"]]
+            elif view == "unreviewed":
+                clusters = [r for r in clusters if r["feedback"] is None and not r["in_digest"]]
 
     return templates.TemplateResponse(
         request,
@@ -593,11 +677,23 @@ def ui_review(
         {
             "active": "review",
             "selected_date": selected_date or "",
+            "view": view,
             "clusters": clusters,
-            "digest_entries": digest_entries,
             "flash": _flash(request),
         },
     )
+
+
+def _review_redirect(redirect_date: Optional[str], redirect_view: Optional[str]) -> str:
+    url = "/ui/review"
+    params = []
+    if redirect_date:
+        params.append(f"date={redirect_date}")
+    if redirect_view and redirect_view != "all":
+        params.append(f"view={redirect_view}")
+    if params:
+        url += "?" + "&".join(params)
+    return url
 
 
 @router.post("/clusters/{cluster_id}/feedback")
@@ -607,15 +703,15 @@ def ui_cluster_feedback(
     section: Optional[str] = Form(None),
     reason: Optional[str] = Form(None),
     redirect_date: Optional[str] = Form(None),
+    redirect_view: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     cluster = db.get(EventCluster, cluster_id)
-    redirect_url = f"/ui/review?date={redirect_date}" if redirect_date else "/ui/review"
+    redirect_url = _review_redirect(redirect_date, redirect_view)
     if cluster is None:
         return _redirect(redirect_url, "err", "Cluster not found")
     if action not in VALID_ACTIONS:
         return _redirect(redirect_url, "err", f"Invalid action: {action!r}")
-    # Blank string → None
     section = section or None
     reason = reason or None
     if action == "section_override" and not section:
@@ -634,11 +730,12 @@ def ui_cluster_feedback(
 def ui_mark_junk(
     entry_id: uuid.UUID,
     redirect_date: Optional[str] = Form(None),
+    redirect_view: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     """Mark the cluster behind a digest entry as noise (always hide)."""
     entry = db.get(DigestEntry, entry_id)
-    redirect_url = f"/ui/review?date={redirect_date}" if redirect_date else "/ui/review"
+    redirect_url = _review_redirect(redirect_date, redirect_view)
     if entry is None:
         return _redirect(redirect_url, "err", "Digest entry not found")
     if entry.event_cluster_id is None:
@@ -649,6 +746,27 @@ def ui_mark_junk(
         return _redirect(redirect_url, "ok", "Cluster marked as noise (junk)")
     except Exception as exc:  # noqa: BLE001
         logger.exception("UI mark-junk failed entry=%s", entry_id)
+        return _redirect(redirect_url, "err", f"Mark junk failed: {exc}")
+
+
+@router.post("/clusters/{cluster_id}/mark-junk")
+def ui_mark_junk_by_cluster(
+    cluster_id: uuid.UUID,
+    redirect_date: Optional[str] = Form(None),
+    redirect_view: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+) -> RedirectResponse:
+    """Mark a cluster directly as noise from the review page."""
+    redirect_url = _review_redirect(redirect_date, redirect_view)
+    cluster = db.get(EventCluster, cluster_id)
+    if cluster is None:
+        return _redirect(redirect_url, "err", "Cluster not found")
+    try:
+        record_feedback(db, cluster_id, action="noise", reason="marked junk from review")
+        logger.info("UI mark-junk-by-cluster cluster=%s", cluster_id)
+        return _redirect(redirect_url, "ok", "Cluster marked as noise (junk)")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("UI mark-junk-by-cluster failed cluster=%s", cluster_id)
         return _redirect(redirect_url, "err", f"Mark junk failed: {exc}")
 
 
