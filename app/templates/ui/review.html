@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Editorial Review — Digest Ops{% endblock %}
+{% block content %}
+<style>
+  .review-section { margin-bottom: 2rem; }
+  .cluster-card { background: #fff; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1rem; padding: 1rem; }
+  .cluster-card h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+  .cluster-meta { font-size: 12px; color: #666; margin-bottom: 0.75rem; }
+  .cluster-meta span { margin-right: 1rem; }
+  .linkage { font-size: 12px; color: #555; background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 3px; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; }
+  .linkage ul { margin: 0.25rem 0 0; padding-left: 1.25rem; }
+  .linkage li { margin-bottom: 2px; }
+  .feedback-state { font-size: 12px; margin-bottom: 0.75rem; padding: 4px 8px; border-radius: 3px; display: inline-block; }
+  .feedback-include { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+  .feedback-exclude { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+  .feedback-noise   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+  .feedback-section_override { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+  .feedback-none    { background: #e2e3e5; color: #383d41; border: 1px solid #d6d8db; }
+  .feedback-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-end; }
+  .feedback-form select, .feedback-form input[type=text] { font-size: 12px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; }
+  .feedback-form input[type=text] { flex: 1; min-width: 180px; }
+  .date-nav { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
+  .date-nav form { display: flex; gap: 0.5rem; align-items: center; }
+  .date-nav input[type=date] { font-size: 13px; padding: 3px 6px; border: 1px solid #ccc; border-radius: 3px; }
+  .empty-section { color: #aaa; font-size: 13px; font-style: italic; }
+</style>
+
+<h1>Editorial Review</h1>
+
+<div class="date-nav">
+  <form method="get" action="/ui/review">
+    <label style="font-size:13px;">Date:</label>
+    <input type="date" name="date" value="{{ selected_date }}">
+    <button class="btn btn-primary" type="submit">Load</button>
+  </form>
+  {% if selected_date %}
+    <span class="muted">Showing clusters for {{ selected_date }}</span>
+  {% endif %}
+</div>
+
+{% if selected_date %}
+
+{# ── Clusters ─────────────────────────────────────────────────────────── #}
+<div class="review-section">
+  <h2>Event Clusters ({{ clusters|length }})</h2>
+  {% if clusters %}
+    {% for row in clusters %}
+    <div class="cluster-card">
+      <h3>{{ row.event_type or "unknown event type" }}
+        {% if row.title %}&nbsp;<span style="font-weight:400;color:#333">— {{ row.title }}</span>{% endif %}
+      </h3>
+      <div class="cluster-meta">
+        <span><strong>Section:</strong> {{ row.primary_section or "—" }}</span>
+        <span><strong>Score:</strong> {{ "%.3f"|format(row.final_score) if row.final_score is not none else "—" }}</span>
+        <span><strong>Include:</strong>
+          {% if row.include_in_digest is none %}—
+          {% elif row.include_in_digest %}<span class="badge badge-yes">yes</span>
+          {% else %}<span class="badge badge-no">no</span>
+          {% endif %}
+        </span>
+        <span class="muted">id: {{ row.cluster_id }}</span>
+      </div>
+
+      {# Linkage: stories → raw items #}
+      {% if row.stories %}
+      <div class="linkage">
+        <strong>Stories &amp; raw items:</strong>
+        <ul>
+          {% for s in row.stories %}
+          <li>
+            Story {% if s.url %}<a href="{{ s.url }}" target="_blank">{{ s.title or s.id }}</a>{% else %}{{ s.title or s.id }}{% endif %}
+            {% if s.source_name %}<span class="muted">({{ s.source_name }})</span>{% endif %}
+            {% if s.raw_item_id %}→ raw item <span class="muted">{{ s.raw_item_id }}</span>{% endif %}
+            {% if s.published_at %}<span class="muted">{{ s.published_at.strftime('%Y-%m-%d') }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {# Current feedback state #}
+      {% if row.feedback %}
+        <div class="feedback-state feedback-{{ row.feedback.action }}">
+          Feedback: <strong>{{ row.feedback.action }}</strong>
+          {% if row.feedback.section %} → {{ row.feedback.section }}{% endif %}
+          {% if row.feedback.reason %} — <em>{{ row.feedback.reason }}</em>{% endif %}
+          <span class="muted">({{ row.feedback.created_at.strftime('%Y-%m-%d %H:%M') if row.feedback.created_at else '' }})</span>
+        </div>
+      {% else %}
+        <div class="feedback-state feedback-none">No feedback set</div>
+      {% endif %}
+
+      {# Feedback action form #}
+      <form class="feedback-form" method="post" action="/ui/clusters/{{ row.cluster_id }}/feedback">
+        <input type="hidden" name="redirect_date" value="{{ selected_date }}">
+        <select name="action">
+          <option value="include" {% if row.feedback and row.feedback.action == 'include' %}selected{% endif %}>include — always show</option>
+          <option value="exclude" {% if row.feedback and row.feedback.action == 'exclude' %}selected{% endif %}>exclude — always hide</option>
+          <option value="noise" {% if row.feedback and row.feedback.action == 'noise' %}selected{% endif %}>noise — irrelevant</option>
+          <option value="section_override" {% if row.feedback and row.feedback.action == 'section_override' %}selected{% endif %}>section_override</option>
+        </select>
+        <select name="section">
+          <option value="">— section —</option>
+          <option value="companies_business" {% if row.feedback and row.feedback.section == 'companies_business' %}selected{% endif %}>companies_business</option>
+          <option value="product_updates" {% if row.feedback and row.feedback.section == 'product_updates' %}selected{% endif %}>product_updates</option>
+        </select>
+        <input type="text" name="reason" placeholder="reason / note (optional)"
+               value="{{ row.feedback.reason or '' if row.feedback else '' }}">
+        <button class="btn btn-primary" type="submit">Set feedback</button>
+      </form>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty-section">No assessed clusters found for {{ selected_date }}.</p>
+  {% endif %}
+</div>
+
+{# ── Recent digest entries (mark-junk) ────────────────────────────────── #}
+<div class="review-section">
+  <h2>Digest Entries for {{ selected_date }} ({{ digest_entries|length }})</h2>
+  {% if digest_entries %}
+  <table>
+    <thead>
+      <tr>
+        <th>Section</th>
+        <th>Rank</th>
+        <th>Title</th>
+        <th>Score</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in digest_entries %}
+      <tr>
+        <td class="muted">{{ e.section_name }}</td>
+        <td>{{ e.rank }}</td>
+        <td>{% if e.source_url %}<a href="{{ e.source_url }}" target="_blank">{{ e.title or "—" }}</a>{% else %}{{ e.title or "—" }}{% endif %}</td>
+        <td>{{ "%.3f"|format(e.final_score) if e.final_score is not none else "—" }}</td>
+        <td>
+          <form class="inline" method="post" action="/ui/digest-entries/{{ e.entry_id }}/mark-junk">
+            <input type="hidden" name="redirect_date" value="{{ selected_date }}">
+            <button class="btn" type="submit" title="Mark cluster as noise and hide from digest">Mark junk</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="empty-section">No digest entries assembled for {{ selected_date }}.</p>
+  {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

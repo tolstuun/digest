@@ -3,13 +3,19 @@ Digest assembly service for the companies_business section.
 
 Candidate selection rules:
   - Only clusters with an EventClusterAssessment present.
-  - primary_section must match the target section_name.
-  - include_in_digest must be True.
+  - primary_section must match the target section_name (or section_override feedback matches).
+  - include_in_digest must be True (unless overridden by feedback).
   - Date assignment (for digest_date filtering):
       Primary: representative story's published_at.date() if available.
       Fallback: event_cluster.created_at.date().
   - Sort included candidates by final_score descending.
   - Limit to max_entries (default: 20).
+
+Editorial feedback overrides (applied BEFORE include_in_digest check):
+  include          → always include, bypass all filters
+  exclude          → always hide, suppress regardless of score
+  noise            → always hide, mark as irrelevant noise
+  section_override → include ONLY in the target section; hidden elsewhere
 
 Idempotent policy: delete-and-rebuild.
   If a DigestRun already exists for (digest_date, section_name), it is deleted
@@ -22,10 +28,17 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.digest.feedback import (
+    get_all_feedback,
+    is_forced_include,
+    is_section_override,
+    is_suppressed,
+)
 from app.digest.filters import (
     should_include_in_companies_business,
     should_include_in_product_updates,
 )
+from app.models.cluster_feedback import ClusterFeedback
 from app.models.digest_entry import DigestEntry
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
@@ -63,39 +76,82 @@ def _effective_date(cluster: EventCluster, rep_story: Optional[Story]) -> date:
     return cluster.created_at.date()
 
 
+def _build_candidate_tuple(
+    db: Session,
+    assessment: EventClusterAssessment,
+) -> _CandidateTuple:
+    """Resolve the cluster, representative story, and facts for one assessment."""
+    cluster = db.get(EventCluster, assessment.event_cluster_id)
+    rep_story: Optional[Story] = None
+    rep_facts: Optional[StoryFacts] = None
+    if cluster is not None and cluster.representative_story_id:
+        rep_story = db.get(Story, cluster.representative_story_id)
+        rep_facts = (
+            db.query(StoryFacts)
+            .filter_by(story_id=cluster.representative_story_id)
+            .first()
+        )
+    return (assessment, cluster, rep_story, rep_facts)
+
+
 def _load_candidates_for_date(
     db: Session,
     digest_date: date,
     section_name: str,
+    all_feedback: dict,
 ) -> list[_CandidateTuple]:
     """
     Load all assessed clusters that match digest_date and section_name,
-    regardless of include_in_digest.
+    regardless of include_in_digest.  Also includes clusters whose latest
+    feedback redirects them here via section_override.
 
     Returns list of (assessment, cluster, rep_story, rep_facts) tuples.
     Used to compute total_candidate_clusters.
     """
+    # Primary candidates: assessment.primary_section matches
     assessments = (
         db.query(EventClusterAssessment)
         .filter(EventClusterAssessment.primary_section == section_name)
         .all()
     )
+
+    seen_cluster_ids: set = set()
     result: list[_CandidateTuple] = []
+
     for assessment in assessments:
-        cluster = db.get(EventCluster, assessment.event_cluster_id)
+        if assessment.event_cluster_id in seen_cluster_ids:
+            continue
+        t = _build_candidate_tuple(db, assessment)
+        _, cluster, rep_story, _ = t
         if cluster is None:
             continue
-        rep_story: Optional[Story] = None
-        rep_facts: Optional[StoryFacts] = None
-        if cluster.representative_story_id:
-            rep_story = db.get(Story, cluster.representative_story_id)
-            rep_facts = (
-                db.query(StoryFacts)
-                .filter_by(story_id=cluster.representative_story_id)
-                .first()
-            )
         if _effective_date(cluster, rep_story) == digest_date:
-            result.append((assessment, cluster, rep_story, rep_facts))
+            result.append(t)
+            seen_cluster_ids.add(assessment.event_cluster_id)
+
+    # Extra candidates from section_override feedback that targets this section
+    override_cluster_ids = [
+        cid for cid, fb in all_feedback.items()
+        if fb.action == "section_override" and fb.section == section_name
+        and cid not in seen_cluster_ids
+    ]
+    if override_cluster_ids:
+        extra_assessments = (
+            db.query(EventClusterAssessment)
+            .filter(EventClusterAssessment.event_cluster_id.in_(override_cluster_ids))
+            .all()
+        )
+        for assessment in extra_assessments:
+            if assessment.event_cluster_id in seen_cluster_ids:
+                continue
+            t = _build_candidate_tuple(db, assessment)
+            _, cluster, rep_story, _ = t
+            if cluster is None:
+                continue
+            if _effective_date(cluster, rep_story) == digest_date:
+                result.append(t)
+                seen_cluster_ids.add(assessment.event_cluster_id)
+
     return result
 
 
@@ -125,15 +181,34 @@ def assemble_digest(
         db.delete(existing)
         db.flush()
 
+    # Load editorial feedback overrides (one query for all clusters)
+    all_feedback = get_all_feedback(db)
+
     # Load all candidates for this date+section (for the total_candidate_clusters count)
-    all_candidates = _load_candidates_for_date(db, digest_date, section_name)
+    all_candidates = _load_candidates_for_date(db, digest_date, section_name, all_feedback)
     total_candidates = len(all_candidates)
 
-    # Filter: include_in_digest=True AND passes relevance gate
+    # Filter: apply editorial feedback overrides, then include_in_digest + relevance gate
     def _passes_relevance(t: _CandidateTuple) -> bool:
         assessment, cluster, rep_story, rep_facts = t
+        feedback = all_feedback.get(cluster.id)
+
+        # Hard suppression overrides (exclude / noise → always hide)
+        if is_suppressed(feedback):
+            return False
+
+        # Hard include override (bypasses all filters)
+        if is_forced_include(feedback):
+            return True
+
+        # section_override: include ONLY in the target section (already loaded as candidate)
+        if feedback is not None and feedback.action == "section_override":
+            return feedback.section == section_name
+
+        # Normal path: require include_in_digest from assessment
         if not assessment.include_in_digest:
             return False
+
         source_name: Optional[str] = None
         if rep_story and rep_story.source_id:
             source = db.get(Source, rep_story.source_id)

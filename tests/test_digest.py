@@ -214,7 +214,7 @@ def test_candidates_empty_when_no_assessments(db):
     source = _make_source(db)
     story = _make_story(db, source, published_at=_dt(TARGET_DATE))
     _make_cluster(db, story, key_suffix="noassess")
-    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME)
+    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME, {})
     assert result == []
 
 
@@ -223,7 +223,7 @@ def test_candidates_excludes_wrong_section(db):
         db, published_at=_dt(TARGET_DATE),
         primary_section="incidents", suffix="wrongsec",
     )
-    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME)
+    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME, {})
     assert result == []
 
 
@@ -231,7 +231,7 @@ def test_candidates_excludes_wrong_date(db):
     cluster, story, _, _ = _make_full_chain(
         db, published_at=_dt(OTHER_DATE), suffix="wrongdate",
     )
-    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME)
+    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME, {})
     assert result == []
 
 
@@ -239,7 +239,7 @@ def test_candidates_includes_correct_date_and_section(db):
     cluster, story, _, _ = _make_full_chain(
         db, published_at=_dt(TARGET_DATE), suffix="correct",
     )
-    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME)
+    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME, {})
     assert len(result) == 1
     assert result[0][0].event_cluster_id == cluster.id
 
@@ -251,7 +251,7 @@ def test_candidates_include_regardless_of_include_in_digest(db):
         db, published_at=_dt(TARGET_DATE),
         include_in_digest=False, suffix="notincluded",
     )
-    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME)
+    result = _load_candidates_for_date(db, TARGET_DATE, SECTION_NAME, {})
     assert len(result) == 1
 
 
