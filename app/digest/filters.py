@@ -6,6 +6,7 @@ All logic is explicit in code — no hidden LLM rules.
 Sections implemented here:
   companies_business — funding, M&A, earnings, market moves of cybersecurity vendors.
   product_updates    — meaningful cybersecurity product launches and major feature releases.
+  incidents          — ransomware attacks, breaches, leaks, extortion, major security incidents.
 
 companies_business pipeline (in order):
   1. Business event type gate — allowlist of business-relevant event types.
@@ -21,10 +22,15 @@ product_updates pipeline (in order):
   4. Content security signal — same as companies_business (keyword or vendor).
   5. Generic tech/consumer noise denylist — same as companies_business.
 
+incidents pipeline (in order):
+  1. At least one explicit incident keyword required in title/summary/source.
+     No event-type gate — incident articles rarely have a uniform event type.
+
 DB-aware helpers:
   cluster_passes_companies_business_gate(db, cluster)
   cluster_passes_product_updates_gate(db, cluster)
-  Both load rep story/facts/source from the database and delegate to the
+  cluster_passes_incidents_gate(db, cluster)
+  All load rep story/facts/source from the database and delegate to the
   appropriate should_include_* function.  Used to gate expensive LLM stages.
 """
 from typing import Optional, TYPE_CHECKING
@@ -562,4 +568,155 @@ def cluster_passes_product_updates_gate(db: "Session", cluster: "EventCluster") 
         summary_en=rep_facts.canonical_summary_en if rep_facts else None,
         company_names=rep_facts.company_names if rep_facts else None,
         source_name=source_name,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# incidents section
+# ══════════════════════════════════════════════════════════════════════════════
+
+# At least one of these must appear in title, summary, or source name.
+# Covers: ransomware victims, breaches, leaks, extortion, major incidents.
+_INCIDENT_KEYWORDS: frozenset[str] = frozenset([
+    # ransomware / extortion
+    "ransomware",
+    "ransom",
+    "extortion",
+    "double extortion",
+    "data extortion",
+    "lockbit",
+    "blackcat",
+    "alphv",
+    "clop",
+    "cl0p",
+    "akira",
+    "play ransomware",
+    "royal ransomware",
+    "black basta",
+    "rhysida",
+    "medusa ransomware",
+    # breach / compromise
+    "breach",
+    "breached",
+    "data breach",
+    "security breach",
+    "compromised",
+    "compromise",
+    "hacked",
+    "hacking",
+    "cyberattack",
+    "cyber attack",
+    "unauthorized access",
+    "intrusion",
+    # leak / exfiltration / theft
+    "data leak",
+    "data leaked",
+    "leaked",
+    "exfiltration",
+    "exfiltrated",
+    "data theft",
+    "stolen data",
+    "stolen credentials",
+    "credential theft",
+    "data exposure",
+    "exposed data",
+    "sensitive data",
+    # generic incident / victim language
+    "victim",
+    "victims",
+    "claimed attack",
+    "claimed responsibility",
+    "posted on",           # dark web leak site post patterns
+    "listed on",
+    "attacked by",
+    "hit by",
+    "targeted by",
+    "incident response",
+    "security incident",
+])
+
+# Known incident-focused source names — if the source is one of these,
+# any story is presumed to be an incident report.
+_INCIDENT_SOURCES: frozenset[str] = frozenset([
+    "ransomware.live",
+    "bleepingcomputer",
+    "databreaches.net",
+    "haveibeenpwned",
+    "vx-underground",
+])
+
+
+def should_include_in_incidents(
+    title: Optional[str],
+    summary_en: Optional[str],
+    source_name: Optional[str],
+) -> bool:
+    """
+    Relevance gate for the incidents section.
+
+    Returns True when the story clearly describes a ransomware attack, data
+    breach, exfiltration, extortion, or major security incident.
+
+    No event-type gate — incident articles come from diverse sources and rarely
+    have a uniform event_type.  The content signal is sufficient.
+
+    Rule: at least one incident keyword in (title + summary), OR source is a
+    known incident-tracking feed.
+    """
+    # Known incident source passes unconditionally
+    if source_name and any(hint in source_name.lower() for hint in _INCIDENT_SOURCES):
+        return True
+
+    combined = f"{title or ''} {summary_en or ''}".strip().lower()
+    if not combined:
+        return False
+
+    return any(kw in combined for kw in _INCIDENT_KEYWORDS)
+
+
+def cluster_passes_incidents_gate(db: "Session", cluster: "EventCluster") -> bool:
+    """
+    Load cluster data from the database and run should_include_in_incidents.
+
+    Used before expensive LLM stages to skip clusters that will not survive
+    the incidents relevance gate at assembly time.
+    """
+    from app.models.source import Source
+    from app.models.story import Story
+    from app.models.story_facts import StoryFacts
+
+    rep_story = None
+    rep_facts = None
+    source_name: Optional[str] = None
+
+    if cluster.representative_story_id:
+        rep_story = db.get(Story, cluster.representative_story_id)
+        if rep_story:
+            rep_facts = (
+                db.query(StoryFacts)
+                .filter_by(story_id=rep_story.id)
+                .first()
+            )
+            if rep_story.source_id:
+                source = db.get(Source, rep_story.source_id)
+                source_name = source.name if source else None
+
+    return should_include_in_incidents(
+        title=rep_story.title if rep_story else None,
+        summary_en=rep_facts.canonical_summary_en if rep_facts else None,
+        source_name=source_name,
+    )
+
+
+def cluster_passes_any_section_gate(db: "Session", cluster: "EventCluster") -> bool:
+    """
+    Return True if the cluster passes at least one known section gate.
+
+    Used in orchestration to decide whether to run expensive LLM assessment
+    on a cluster.  A cluster that can't pass any gate is skipped.
+    """
+    return (
+        cluster_passes_companies_business_gate(db, cluster)
+        or cluster_passes_product_updates_gate(db, cluster)
+        or cluster_passes_incidents_gate(db, cluster)
     )

@@ -36,6 +36,7 @@ from app.digest.feedback import (
 )
 from app.digest.filters import (
     should_include_in_companies_business,
+    should_include_in_incidents,
     should_include_in_product_updates,
 )
 from app.models.cluster_feedback import ClusterFeedback
@@ -51,6 +52,10 @@ logger = logging.getLogger(__name__)
 
 SECTION_NAME = "companies_business"
 PRODUCT_UPDATES_SECTION = "product_updates"
+INCIDENTS_SECTION = "incidents"
+
+# All known section names — used for validation in UI and feedback routing.
+ALL_SECTIONS: tuple[str, ...] = (SECTION_NAME, PRODUCT_UPDATES_SECTION, INCIDENTS_SECTION)
 
 # Maximum entries per digest run. Explicit in code; can be overridden per call.
 MAX_ENTRIES_DEFAULT = 20
@@ -228,6 +233,12 @@ def assemble_digest(
                 title=rep_story.title if rep_story else None,
                 summary_en=rep_facts.canonical_summary_en if rep_facts else None,
                 company_names=rep_facts.company_names if rep_facts else None,
+                source_name=source_name,
+            )
+        if section_name == INCIDENTS_SECTION:
+            return should_include_in_incidents(
+                title=rep_story.title if rep_story else None,
+                summary_en=rep_facts.canonical_summary_en if rep_facts else None,
                 source_name=source_name,
             )
         return True
