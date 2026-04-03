@@ -36,8 +36,13 @@ from sqlalchemy.orm import Session
 
 from app.clustering.service import cluster_story
 from app.config import Settings
-from app.digest.filters import cluster_passes_companies_business_gate
-from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
+from app.digest.filters import cluster_passes_any_section_gate
+from app.digest.service import (
+    INCIDENTS_SECTION,
+    MAX_ENTRIES_DEFAULT,
+    SECTION_NAME,
+    assemble_digest,
+)
 from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
@@ -215,10 +220,10 @@ def _run_assess(db: Session) -> dict:
     )
     assessed = errors = skipped = 0
     for cluster in clusters:
-        if not cluster_passes_companies_business_gate(db, cluster):
+        if not cluster_passes_any_section_gate(db, cluster):
             skipped += 1
             logger.debug(
-                "assess skipped cluster=%s: fails companies_business relevance gate",
+                "assess skipped cluster=%s: fails all section relevance gates",
                 cluster.id,
             )
             continue
@@ -232,16 +237,27 @@ def _run_assess(db: Session) -> dict:
 
 
 def _run_assemble_digest(db: Session, run_date: date) -> dict:
-    run, entries, created = assemble_digest(
-        db,
-        digest_date=run_date,
-        section_name=SECTION_NAME,
-        max_entries=MAX_ENTRIES_DEFAULT,
-    )
+    results = []
+    for section in (SECTION_NAME, INCIDENTS_SECTION):
+        run, entries, created = assemble_digest(
+            db,
+            digest_date=run_date,
+            section_name=section,
+            max_entries=MAX_ENTRIES_DEFAULT,
+        )
+        results.append({
+            "section": section,
+            "digest_run_id": str(run.id),
+            "total_included": len(entries),
+            "created": created,
+        })
+    # Return summary keyed to primary section for backward compatibility
+    primary = results[0]
     return {
-        "digest_run_id": str(run.id),
-        "total_included": len(entries),
-        "created": created,
+        "digest_run_id": primary["digest_run_id"],
+        "total_included": primary["total_included"],
+        "created": primary["created"],
+        "sections": results,
     }
 
 

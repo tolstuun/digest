@@ -149,6 +149,7 @@
         <option value="">— section —</option>
         <option value="companies_business" {% if row.feedback and row.feedback.section == 'companies_business' %}selected{% endif %}>companies_business</option>
         <option value="product_updates"    {% if row.feedback and row.feedback.section == 'product_updates' %}selected{% endif %}>product_updates</option>
+        <option value="incidents"          {% if row.feedback and row.feedback.section == 'incidents' %}selected{% endif %}>incidents</option>
       </select>
       <input type="text" name="reason" placeholder="reason / note (optional)"
              value="{{ row.feedback.reason or '' if row.feedback else '' }}">

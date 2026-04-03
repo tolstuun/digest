@@ -44,9 +44,17 @@ from app.database import get_db
 from app.digest.feedback import VALID_ACTIONS, get_all_feedback, record_feedback
 from app.digest.filters import (
     should_include_in_companies_business,
+    should_include_in_incidents,
     should_include_in_product_updates,
 )
-from app.digest.service import MAX_ENTRIES_DEFAULT, PRODUCT_UPDATES_SECTION, SECTION_NAME, assemble_digest
+from app.digest.service import (
+    ALL_SECTIONS,
+    INCIDENTS_SECTION,
+    MAX_ENTRIES_DEFAULT,
+    PRODUCT_UPDATES_SECTION,
+    SECTION_NAME,
+    assemble_digest,
+)
 from app.digest_writer.service import write_digest_entries
 from app.ingestion.service import ingest_source
 from app.models.cluster_feedback import ClusterFeedback
@@ -526,6 +534,9 @@ def _compute_exclusion_reason(
     elif section == PRODUCT_UPDATES_SECTION:
         if not should_include_in_product_updates(event_type, title, summary_en, company_names, source_name):
             return "excluded: product_updates filter"
+    elif section == INCIDENTS_SECTION:
+        if not should_include_in_incidents(title, summary_en, source_name):
+            return "excluded: incidents filter"
     else:
         return f"excluded: not in section ({section or 'none'})"
 
