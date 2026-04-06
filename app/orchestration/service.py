@@ -21,10 +21,10 @@ Step order (fixed):
   3. extract_facts      — LLM fact extraction for stories without facts
   4. cluster_event      — cluster stories with facts but no cluster assigned
   5. assess             — score clusters without an assessment
-  6. assemble_digest    — assemble digest for run_date + companies_business
-  7. write_digest       — LLM final digest copy for each entry (configured language)
-  8. render_digest      — render HTML for the assembled run
-  9. publish_telegram   — send to Telegram if enabled
+  6. assemble_digest    — assemble digest for run_date, all active sections
+  7. write_digest       — LLM final digest copy for each section's entries
+  8. render_digest      — render HTML page for each section's digest run
+  9. publish_telegram   — send each section's page to Telegram if enabled
 """
 from __future__ import annotations
 
@@ -274,58 +274,96 @@ def _run_write_digest(
     cfg: Settings,
     pipeline_run_id: Optional[uuid.UUID] = None,
 ) -> dict:
-    run = (
-        db.query(DigestRun)
-        .filter_by(digest_date=run_date, section_name=SECTION_NAME)
-        .first()
-    )
-    if run is None:
-        return {"skipped": True, "reason": "no digest run found for date"}
-    return write_digest_entries(db, run, cfg, pipeline_run_id=pipeline_run_id)
+    """Write final digest copy for every section assembled for run_date."""
+    sections = (SECTION_NAME, INCIDENTS_SECTION)
+    results = []
+    for section in sections:
+        run = (
+            db.query(DigestRun)
+            .filter_by(digest_date=run_date, section_name=section)
+            .first()
+        )
+        if run is None:
+            results.append({"section": section, "skipped": True, "reason": "no digest run found"})
+            continue
+        section_result = write_digest_entries(db, run, cfg, pipeline_run_id=pipeline_run_id)
+        results.append({"section": section, **section_result})
+    return {"sections": results}
 
 
 def _run_render_digest(db: Session, run_date: date) -> dict:
-    run = (
-        db.query(DigestRun)
-        .filter_by(digest_date=run_date, section_name=SECTION_NAME)
-        .first()
-    )
-    if run is None:
-        return {"skipped": True, "reason": "no digest run found for date"}
-    page, created = render_digest_page(db, run)
-    return {
-        "digest_page_id": str(page.id),
-        "slug": page.slug,
-        "created": created,
-    }
+    """Render an HTML page for every section's digest run for run_date."""
+    from app.models.digest_page import DigestPage
+
+    sections = (SECTION_NAME, INCIDENTS_SECTION)
+    results = []
+    primary_page_id: Optional[str] = None
+    for section in sections:
+        run = (
+            db.query(DigestRun)
+            .filter_by(digest_date=run_date, section_name=section)
+            .first()
+        )
+        if run is None:
+            results.append({"section": section, "skipped": True, "reason": "no digest run found"})
+            continue
+        page, created = render_digest_page(db, run)
+        entry = {
+            "section": section,
+            "digest_page_id": str(page.id),
+            "slug": page.slug,
+            "created": created,
+        }
+        results.append(entry)
+        if section == SECTION_NAME:
+            primary_page_id = str(page.id)
+    # Keep top-level digest_page_id pointing to the primary section's page
+    # for backward compatibility with summary extraction.
+    result: dict = {"sections": results}
+    if primary_page_id is not None:
+        result["digest_page_id"] = primary_page_id
+    return result
 
 
 def _run_publish_telegram(
     db: Session, run_date: date, cfg: Settings
 ) -> dict:
+    """Publish every section's rendered page to Telegram."""
     if not cfg.telegram.enabled:
         return {"skipped": True, "reason": "telegram.enabled=false"}
 
     from app.models.digest_page import DigestPage
 
-    run = (
-        db.query(DigestRun)
-        .filter_by(digest_date=run_date, section_name=SECTION_NAME)
-        .first()
-    )
-    if run is None:
-        return {"skipped": True, "reason": "no digest run for date"}
-
-    page = db.query(DigestPage).filter_by(digest_run_id=run.id).first()
-    if page is None:
-        return {"skipped": True, "reason": "no digest page for run"}
-
-    pub, created = publish_to_telegram(db, page, cfg)
-    return {
-        "digest_publication_id": str(pub.id),
-        "message_id": pub.provider_message_id,
-        "created": created,
-    }
+    sections = (SECTION_NAME, INCIDENTS_SECTION)
+    results = []
+    primary_pub_id: Optional[str] = None
+    for section in sections:
+        run = (
+            db.query(DigestRun)
+            .filter_by(digest_date=run_date, section_name=section)
+            .first()
+        )
+        if run is None:
+            results.append({"section": section, "skipped": True, "reason": "no digest run found"})
+            continue
+        page = db.query(DigestPage).filter_by(digest_run_id=run.id).first()
+        if page is None:
+            results.append({"section": section, "skipped": True, "reason": "no digest page for run"})
+            continue
+        pub, created = publish_to_telegram(db, page, cfg)
+        entry = {
+            "section": section,
+            "digest_publication_id": str(pub.id),
+            "message_id": pub.provider_message_id,
+            "created": created,
+        }
+        results.append(entry)
+        if section == SECTION_NAME:
+            primary_pub_id = str(pub.id)
+    result: dict = {"sections": results}
+    if primary_pub_id is not None:
+        result["digest_publication_id"] = primary_pub_id
+    return result
 
 
 # ── main orchestrator ─────────────────────────────────────────────────────────
