@@ -32,8 +32,11 @@
       <td>
         {% if row.status == "assembled" %}
           <span class="badge badge-ok">{{ row.status }}</span>
+        {% elif row.status == "empty" and row.billing_failed %}
+          <span class="badge badge-warn">empty</span>
+          <span class="badge" style="background:#e6a817;color:#fff;margin-left:2px" title="Pipeline run failed due to Anthropic billing/quota error on this date">billing/quota</span>
         {% elif row.status == "empty" %}
-          <span class="badge badge-warn">{{ row.status }}</span>
+          <span class="badge badge-warn">empty</span>
         {% else %}
           <span class="badge badge-info">{{ row.status }}</span>
         {% endif %}

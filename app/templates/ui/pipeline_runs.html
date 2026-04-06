@@ -22,6 +22,7 @@
       <th>Status</th>
       <th>Started</th>
       <th>Duration</th>
+      <th>Cost</th>
       <th>Steps</th>
       <th>Error</th>
     </tr>
@@ -32,7 +33,10 @@
       <td>{{ row.run_date }}</td>
       <td><span class="badge badge-info">{{ row.trigger_type }}</span></td>
       <td>
-        {% if row.status == "success" %}
+        {% if row.is_billing_failure %}
+          <span class="badge badge-no">failed</span>
+          <span class="badge" style="background:#e6a817;color:#fff;margin-left:2px" title="{{ row.error_message }}">billing/quota</span>
+        {% elif row.status == "success" %}
           <span class="badge badge-ok">success</span>
         {% elif row.status == "failed" %}
           <span class="badge badge-no">failed</span>
@@ -44,6 +48,13 @@
       <td class="muted">
         {% if row.started_at and row.finished_at %}
           {{ ((row.finished_at - row.started_at).total_seconds() | int) }}s
+        {% else %}
+          —
+        {% endif %}
+      </td>
+      <td class="muted" style="font-family:monospace;font-size:12px">
+        {% if row.total_cost_usd > 0 %}
+          ${{ "%.6f" | format(row.total_cost_usd) }}
         {% else %}
           —
         {% endif %}
@@ -63,7 +74,7 @@
     </tr>
     {% if row.steps %}
     <tr>
-      <td colspan="7" style="padding:0 10px 8px 30px;background:#fafafa">
+      <td colspan="8" style="padding:0 10px 8px 30px;background:#fafafa">
         <table style="border:none;font-size:12px">
           <thead>
             <tr>

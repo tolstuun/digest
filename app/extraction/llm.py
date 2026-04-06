@@ -10,6 +10,7 @@ import anthropic
 
 from app.config import settings
 from app.extraction.schemas import ExtractionResult, StoryInput
+from app.llm_usage.errors import raise_if_billing_error
 from app.llm_usage.schemas import LlmUsageInfo
 
 logger = logging.getLogger(__name__)
@@ -68,13 +69,17 @@ def extract_facts_llm(story_input: StoryInput) -> tuple[ExtractionResult, LlmUsa
         text_parts.append(f"URL: {story_input.url}")
     prompt = "\n\n".join(text_parts) or "(no content)"
 
-    response = client.messages.create(
-        model=settings.extraction_model,
-        max_tokens=1024,
-        tools=[_TOOL_SCHEMA],
-        tool_choice={"type": "tool", "name": _TOOL_NAME},
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        response = client.messages.create(
+            model=settings.extraction_model,
+            max_tokens=1024,
+            tools=[_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": _TOOL_NAME},
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        raise_if_billing_error(exc)
+        raise
 
     tool_use_block = next(b for b in response.content if b.type == "tool_use")
     result = ExtractionResult(**tool_use_block.input)

@@ -9,6 +9,7 @@ import logging
 import anthropic
 
 from app.config import settings
+from app.llm_usage.errors import raise_if_billing_error
 from app.llm_usage.schemas import LlmUsageInfo
 from app.scoring.schemas import ClusterAssessment, ClusterInput
 
@@ -101,13 +102,17 @@ def assess_cluster_llm(cluster_input: ClusterInput) -> tuple[ClusterAssessment, 
         f"Summary: {cluster_input.canonical_summary_en or 'N/A'}"
     )
 
-    response = client.messages.create(
-        model=settings.scoring_model,
-        max_tokens=512,
-        tools=[_TOOL_SCHEMA],
-        tool_choice={"type": "tool", "name": _TOOL_NAME},
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        response = client.messages.create(
+            model=settings.scoring_model,
+            max_tokens=512,
+            tools=[_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": _TOOL_NAME},
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        raise_if_billing_error(exc)
+        raise
 
     tool_use_block = next(b for b in response.content if b.type == "tool_use")
     result = ClusterAssessment(**tool_use_block.input)
