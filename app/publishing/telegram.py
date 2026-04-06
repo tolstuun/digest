@@ -37,6 +37,18 @@ def build_message_text(
     )
 
 
+def send_operational_alert(bot_token: str, chat_id: str, text: str) -> None:
+    """
+    Send a plain-text operational alert to Telegram.
+
+    Failures are logged and swallowed — alerts must never crash the caller.
+    """
+    try:
+        send_telegram_message(bot_token, chat_id, text)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to send operational alert to Telegram: %s", exc)
+
+
 def send_telegram_message(bot_token: str, chat_id: str, text: str) -> str:
     """
     Send a text message via Telegram Bot API.

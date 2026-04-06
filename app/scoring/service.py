@@ -5,7 +5,9 @@ Combines rule-based pre-score with LLM editorial judgment into a final score,
 then upserts one EventClusterAssessment row per cluster.
 """
 import logging
+import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -30,7 +32,9 @@ _LLM_WEIGHT = 0.6
 
 
 def assess_cluster(
-    db: Session, cluster: EventCluster
+    db: Session,
+    cluster: EventCluster,
+    pipeline_run_id: Optional[uuid.UUID] = None,
 ) -> tuple[EventClusterAssessment, bool]:
     """
     Run full assessment for an event cluster and upsert the result.
@@ -140,7 +144,7 @@ def assess_cluster(
     db.commit()
     db.refresh(assessment)
 
-    record_usage(db, "assess", llm_usage)
+    record_usage(db, "assess", llm_usage, pipeline_run_id=pipeline_run_id)
 
     logger.info(
         "assess_cluster cluster=%s rule=%.3f llm=%.3f final=%.3f include=%s created=%s",

@@ -29,6 +29,7 @@ Step order (fixed):
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
@@ -46,6 +47,7 @@ from app.digest.service import (
 from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
+from app.llm_usage.errors import AnthropicBillingError
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
@@ -57,6 +59,7 @@ from app.models.story import Story
 from app.models.story_facts import StoryFacts
 from app.normalization.service import normalize_raw_item
 from app.publishing.service import publish_to_telegram
+from app.publishing.telegram import send_operational_alert
 from app.rendering.service import render_digest_page
 from app.scoring.service import assess_cluster
 
@@ -164,7 +167,7 @@ def _run_normalize(db: Session) -> dict:
     return {"total": len(raw_items), "new": new, "skipped": skipped}
 
 
-def _run_extract_facts(db: Session) -> dict:
+def _run_extract_facts(db: Session, pipeline_run_id: Optional[uuid.UUID] = None) -> dict:
     # Stories that don't yet have a StoryFacts row
     stories = (
         db.query(Story)
@@ -175,11 +178,13 @@ def _run_extract_facts(db: Session) -> dict:
     new = updated = errors = 0
     for story in stories:
         try:
-            _, created = extract_story_facts(db, story)
+            _, created = extract_story_facts(db, story, pipeline_run_id=pipeline_run_id)
             if created:
                 new += 1
             else:
                 updated += 1
+        except AnthropicBillingError:
+            raise
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("extract_facts failed story=%s: %s", story.id, exc)
@@ -207,7 +212,7 @@ def _run_cluster_event(db: Session) -> dict:
     return {"total": len(stories), "clustered": clustered, "not_clustered": not_clustered}
 
 
-def _run_assess(db: Session) -> dict:
+def _run_assess(db: Session, pipeline_run_id: Optional[uuid.UUID] = None) -> dict:
     # Clusters without an assessment row
     clusters = (
         db.query(EventCluster)
@@ -228,8 +233,10 @@ def _run_assess(db: Session) -> dict:
             )
             continue
         try:
-            assess_cluster(db, cluster)
+            assess_cluster(db, cluster, pipeline_run_id=pipeline_run_id)
             assessed += 1
+        except AnthropicBillingError:
+            raise
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("assess failed cluster=%s: %s", cluster.id, exc)
@@ -261,7 +268,12 @@ def _run_assemble_digest(db: Session, run_date: date) -> dict:
     }
 
 
-def _run_write_digest(db: Session, run_date: date, cfg: Settings) -> dict:
+def _run_write_digest(
+    db: Session,
+    run_date: date,
+    cfg: Settings,
+    pipeline_run_id: Optional[uuid.UUID] = None,
+) -> dict:
     run = (
         db.query(DigestRun)
         .filter_by(digest_date=run_date, section_name=SECTION_NAME)
@@ -269,7 +281,7 @@ def _run_write_digest(db: Session, run_date: date, cfg: Settings) -> dict:
     )
     if run is None:
         return {"skipped": True, "reason": "no digest run found for date"}
-    return write_digest_entries(db, run, cfg)
+    return write_digest_entries(db, run, cfg, pipeline_run_id=pipeline_run_id)
 
 
 def _run_render_digest(db: Session, run_date: date) -> dict:
@@ -367,15 +379,17 @@ def run_daily_pipeline(
     step_results: dict[str, dict] = {}
     failed_step: Optional[str] = None
 
+    run_id: uuid.UUID = run.id  # captured for lambda closures
+
     # Map step names to their executors
     step_executors = [
         ("ingest",           lambda: _run_ingest(db)),
         ("normalize",        lambda: _run_normalize(db)),
-        ("extract_facts",    lambda: _run_extract_facts(db)),
+        ("extract_facts",    lambda: _run_extract_facts(db, pipeline_run_id=run_id)),
         ("cluster_event",    lambda: _run_cluster_event(db)),
-        ("assess",           lambda: _run_assess(db)),
+        ("assess",           lambda: _run_assess(db, pipeline_run_id=run_id)),
         ("assemble_digest",  lambda: _run_assemble_digest(db, run_date)),
-        ("write_digest",     lambda: _run_write_digest(db, run_date, cfg)),
+        ("write_digest",     lambda: _run_write_digest(db, run_date, cfg, pipeline_run_id=run_id)),
         ("render_digest",    lambda: _run_render_digest(db, run_date)),
         ("publish_telegram", lambda: (
             _run_publish_telegram(db, run_date, cfg)
@@ -390,6 +404,28 @@ def run_daily_pipeline(
             details = executor()
             _finish_step(db, step, status="success", details=details)
             step_results[step_name] = details
+        except AnthropicBillingError as exc:
+            error_msg = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "pipeline_run=%s step=%s BILLING FAILURE: %s", run.id, step_name, error_msg
+            )
+            _finish_step(db, step, status="failed", error=error_msg)
+            step_results[step_name] = {"error": error_msg}
+            failed_step = step_name
+            _finish_run(db, run, status="failed", error=error_msg)
+            # Send exactly one Telegram operational alert per billing-failed run
+            if cfg.telegram.enabled:
+                alert_text = (
+                    f"Pipeline run FAILED — Anthropic billing/quota error\n"
+                    f"Run ID: {run.id}\n"
+                    f"Date: {run_date}\n"
+                    f"Step: {step_name}\n"
+                    f"Error: {exc}"
+                )
+                send_operational_alert(
+                    cfg.telegram.bot_token, cfg.telegram.chat_id, alert_text
+                )
+            break
         except Exception as exc:  # noqa: BLE001
             error_msg = f"{type(exc).__name__}: {exc}"
             logger.exception(

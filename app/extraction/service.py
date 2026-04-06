@@ -2,7 +2,9 @@
 Extraction service: orchestrates LLM call and persists StoryFacts.
 """
 import logging
+import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -17,7 +19,11 @@ from app.models.story_facts import StoryFacts
 logger = logging.getLogger(__name__)
 
 
-def extract_story_facts(db: Session, story: Story) -> tuple[StoryFacts, bool]:
+def extract_story_facts(
+    db: Session,
+    story: Story,
+    pipeline_run_id: Optional[uuid.UUID] = None,
+) -> tuple[StoryFacts, bool]:
     """
     Extract facts from *story* using LLM and persist to story_facts.
 
@@ -65,7 +71,7 @@ def extract_story_facts(db: Session, story: Story) -> tuple[StoryFacts, bool]:
     db.commit()
     db.refresh(facts)
 
-    record_usage(db, "extract_facts", llm_usage)
+    record_usage(db, "extract_facts", llm_usage, pipeline_run_id=pipeline_run_id)
 
     logger.info(
         "extract_story_facts story=%s event_type=%s confidence=%.2f created=%s",

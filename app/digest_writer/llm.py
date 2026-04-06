@@ -11,6 +11,7 @@ import logging
 import anthropic
 
 from app.digest_writer.schemas import DigestEntryInput, DigestEntryOutput
+from app.llm_usage.errors import raise_if_billing_error
 from app.llm_usage.schemas import LlmUsageInfo
 
 logger = logging.getLogger(__name__)
@@ -86,13 +87,17 @@ def write_digest_entry_llm(
         "Now write the final digest copy using the tool."
     )
 
-    response = client.messages.create(
-        model=model_name,
-        max_tokens=768,
-        tools=[_TOOL_SCHEMA],
-        tool_choice={"type": "tool", "name": _TOOL_NAME},
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=768,
+            tools=[_TOOL_SCHEMA],
+            tool_choice={"type": "tool", "name": _TOOL_NAME},
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        raise_if_billing_error(exc)
+        raise
 
     tool_use_block = next(b for b in response.content if b.type == "tool_use")
     result = DigestEntryOutput(**tool_use_block.input)

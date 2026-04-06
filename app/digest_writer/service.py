@@ -8,6 +8,7 @@ and updates each entry with final_summary and final_why_it_matters.
 Idempotent: entries that already have final_summary set are skipped unless force=True.
 """
 import logging
+import uuid
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,7 @@ from app.digest.filters import should_include_in_companies_business
 from app.digest.service import SECTION_NAME
 from app.digest_writer.llm import write_digest_entry_llm
 from app.digest_writer.schemas import DigestEntryInput
+from app.llm_usage.errors import AnthropicBillingError
 from app.llm_usage.service import record_usage
 from app.models.digest_entry import DigestEntry
 from app.models.digest_run import DigestRun
@@ -34,6 +36,7 @@ def write_digest_entries(
     run: DigestRun,
     cfg: Settings,
     force: bool = False,
+    pipeline_run_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """
     Run the digest-writing stage for all entries in a DigestRun.
@@ -122,12 +125,15 @@ def write_digest_entries(
             entry.final_summary = result.final_summary
             entry.final_why_it_matters = result.final_why_it_matters
             db.commit()
-            record_usage(db, _STAGE, usage)
+            record_usage(db, _STAGE, usage, pipeline_run_id=pipeline_run_id)
             written += 1
             logger.info(
                 "write_digest entry=%s lang=%s written",
                 entry.id, output_language,
             )
+        except AnthropicBillingError:
+            db.rollback()
+            raise
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("write_digest entry=%s failed: %s", entry.id, exc)

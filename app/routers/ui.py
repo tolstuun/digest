@@ -70,6 +70,8 @@ from app.models.raw_item import RawItem
 from app.models.source import Source
 from app.models.story import Story
 from app.models.story_facts import StoryFacts
+from app.llm_usage.errors import AnthropicBillingError
+from app.llm_usage.service import get_cost_for_run
 from app.normalization.service import normalize_raw_item
 from app.orchestration.service import run_daily_pipeline
 from app.publishing.service import publish_to_telegram
@@ -139,6 +141,18 @@ def ui_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
         .limit(10)
         .all()
     )
+    # Check if the most recent pipeline run failed with a billing/quota error
+    last_run = (
+        db.query(PipelineRun)
+        .order_by(PipelineRun.started_at.desc())
+        .first()
+    )
+    billing_alert = (
+        last_run is not None
+        and last_run.status == "failed"
+        and last_run.error_message is not None
+        and "AnthropicBillingError" in last_run.error_message
+    )
     return templates.TemplateResponse(
         request,
         "ui/dashboard.html",
@@ -146,6 +160,8 @@ def ui_dashboard(request: Request, db: Session = Depends(get_db)) -> HTMLRespons
             "active": "dashboard",
             "counts": counts,
             "recent_errors": recent_errors,
+            "billing_alert": billing_alert,
+            "last_run": last_run,
             "git_sha": os.environ.get("APP_GIT_SHA", "unknown"),
             "flash": _flash(request),
         },
@@ -292,6 +308,19 @@ def ui_digests(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
         .all()
     }
 
+    # Build a map of digest_date -> latest failed pipeline run with billing error
+    billing_failed_dates: set[date_cls] = set()
+    billing_runs = (
+        db.query(PipelineRun)
+        .filter(
+            PipelineRun.status == "failed",
+            PipelineRun.error_message.contains("AnthropicBillingError"),
+        )
+        .all()
+    )
+    for br in billing_runs:
+        billing_failed_dates.add(br.run_date)
+
     rows = []
     for r in runs:
         p = pages.get(r.id)
@@ -308,6 +337,7 @@ def ui_digests(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
             "page_slug": p.slug if p else None,
             "publication_status": pub.status if pub else None,
             "publication_at": pub.published_at if pub else None,
+            "billing_failed": r.digest_date in billing_failed_dates,
         })
 
     return templates.TemplateResponse(
@@ -420,6 +450,12 @@ def ui_pipeline_runs(request: Request, db: Session = Depends(get_db)) -> HTMLRes
 
     rows = []
     for r in runs:
+        cost_info = get_cost_for_run(db, r)
+        is_billing_failure = (
+            r.status == "failed"
+            and r.error_message is not None
+            and "AnthropicBillingError" in r.error_message
+        )
         rows.append({
             "id": r.id,
             "run_date": r.run_date,
@@ -429,6 +465,9 @@ def ui_pipeline_runs(request: Request, db: Session = Depends(get_db)) -> HTMLRes
             "finished_at": r.finished_at,
             "error_message": r.error_message,
             "steps": all_steps.get(r.id, []),
+            "total_cost_usd": cost_info["total_cost_usd"],
+            "cost_by_stage": cost_info["stages"],
+            "is_billing_failure": is_billing_failure,
         })
 
     return templates.TemplateResponse(

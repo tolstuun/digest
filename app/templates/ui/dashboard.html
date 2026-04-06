@@ -3,6 +3,24 @@
 {% block content %}
 <h1>Dashboard</h1>
 
+{% if billing_alert %}
+<div style="background:#fff3cd;border:1px solid #e6a817;border-radius:4px;padding:12px 16px;margin-bottom:1.5rem;display:flex;align-items:flex-start;gap:10px">
+  <span style="font-size:1.3em;line-height:1">&#9888;</span>
+  <div>
+    <strong style="color:#856404">Anthropic billing/quota error</strong>
+    <div style="font-size:13px;margin-top:4px;color:#664d03">
+      The most recent pipeline run failed due to an Anthropic billing or quota issue.
+      No digest was produced.
+      {% if last_run %}
+        Run ID: <code>{{ last_run.id }}</code> &mdash;
+        Date: {{ last_run.run_date }} &mdash;
+        <a href="/ui/pipeline-runs" style="color:#664d03">View run details</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="stat-grid">
   <div class="stat-card">
     <div class="num">{{ counts.sources }}</div>
