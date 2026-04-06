@@ -42,6 +42,6 @@ class ExtractionResult(BaseModel):
     geography_names: list[str]
     amount_text: Optional[str] = None
     currency: Optional[str] = None
-    canonical_summary_en: str
-    canonical_summary_ru: str
+    canonical_summary_en: str = ""
+    canonical_summary_ru: str = ""
     extraction_confidence: float = Field(ge=0.0, le=1.0)

@@ -167,7 +167,11 @@ def _run_normalize(db: Session) -> dict:
     return {"total": len(raw_items), "new": new, "skipped": skipped}
 
 
-def _run_extract_facts(db: Session, pipeline_run_id: Optional[uuid.UUID] = None) -> dict:
+def _run_extract_facts(
+    db: Session,
+    pipeline_run_id: Optional[uuid.UUID] = None,
+    output_language: Optional[str] = None,
+) -> dict:
     # Stories that don't yet have a StoryFacts row
     stories = (
         db.query(Story)
@@ -178,7 +182,11 @@ def _run_extract_facts(db: Session, pipeline_run_id: Optional[uuid.UUID] = None)
     new = updated = errors = 0
     for story in stories:
         try:
-            _, created = extract_story_facts(db, story, pipeline_run_id=pipeline_run_id)
+            _, created = extract_story_facts(
+                db, story,
+                pipeline_run_id=pipeline_run_id,
+                output_language=output_language,
+            )
             if created:
                 new += 1
             else:
@@ -212,7 +220,11 @@ def _run_cluster_event(db: Session) -> dict:
     return {"total": len(stories), "clustered": clustered, "not_clustered": not_clustered}
 
 
-def _run_assess(db: Session, pipeline_run_id: Optional[uuid.UUID] = None) -> dict:
+def _run_assess(
+    db: Session,
+    pipeline_run_id: Optional[uuid.UUID] = None,
+    output_language: Optional[str] = None,
+) -> dict:
     # Clusters without an assessment row
     clusters = (
         db.query(EventCluster)
@@ -233,7 +245,11 @@ def _run_assess(db: Session, pipeline_run_id: Optional[uuid.UUID] = None) -> dic
             )
             continue
         try:
-            assess_cluster(db, cluster, pipeline_run_id=pipeline_run_id)
+            assess_cluster(
+                db, cluster,
+                pipeline_run_id=pipeline_run_id,
+                output_language=output_language,
+            )
             assessed += 1
         except AnthropicBillingError:
             raise
@@ -423,9 +439,9 @@ def run_daily_pipeline(
     step_executors = [
         ("ingest",           lambda: _run_ingest(db)),
         ("normalize",        lambda: _run_normalize(db)),
-        ("extract_facts",    lambda: _run_extract_facts(db, pipeline_run_id=run_id)),
+        ("extract_facts",    lambda: _run_extract_facts(db, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
         ("cluster_event",    lambda: _run_cluster_event(db)),
-        ("assess",           lambda: _run_assess(db, pipeline_run_id=run_id)),
+        ("assess",           lambda: _run_assess(db, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
         ("assemble_digest",  lambda: _run_assemble_digest(db, run_date)),
         ("write_digest",     lambda: _run_write_digest(db, run_date, cfg, pipeline_run_id=run_id)),
         ("render_digest",    lambda: _run_render_digest(db, run_date)),

@@ -36,6 +36,6 @@ class ClusterAssessment(BaseModel):
     primary_section: SectionType
     llm_score: float = Field(ge=0.0, le=1.0)
     include_in_digest: bool
-    why_it_matters_en: str
-    why_it_matters_ru: str
-    editorial_notes: str
+    why_it_matters_en: str = ""
+    why_it_matters_ru: str = ""
+    editorial_notes: str = ""

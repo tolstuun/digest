@@ -35,6 +35,7 @@ def assess_cluster(
     db: Session,
     cluster: EventCluster,
     pipeline_run_id: Optional[uuid.UUID] = None,
+    output_language: Optional[str] = None,
 ) -> tuple[EventClusterAssessment, bool]:
     """
     Run full assessment for an event cluster and upsert the result.
@@ -110,7 +111,8 @@ def assess_cluster(
     )
 
     # 6. LLM editorial assessment
-    llm_result, llm_usage = assess_cluster_llm(cluster_input)
+    lang = output_language or settings.digest.output_language
+    llm_result, llm_usage = assess_cluster_llm(cluster_input, output_language=lang)
 
     # 7. Final score
     final_score = round(_RULE_WEIGHT * rule_score + _LLM_WEIGHT * llm_result.llm_score, 4)

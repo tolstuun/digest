@@ -17,45 +17,85 @@ logger = logging.getLogger(__name__)
 
 _TOOL_NAME = "extract_facts"
 
-_TOOL_SCHEMA = {
-    "name": _TOOL_NAME,
-    "description": (
-        "Extract structured facts from a cybersecurity news article. "
-        "Return all fields even if values are empty lists or null."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "source_language": {"type": "string", "description": "ISO 639-1 language code of the source text"},
-            "event_type": {
-                "type": "string",
-                "enum": [
-                    "funding", "mna", "earnings", "executive_change", "partnership",
-                    "product_launch", "breach", "conference", "regulation", "other", "unknown",
-                ],
-            },
-            "company_names": {"type": "array", "items": {"type": "string"}},
-            "person_names": {"type": "array", "items": {"type": "string"}},
-            "product_names": {"type": "array", "items": {"type": "string"}},
-            "geography_names": {"type": "array", "items": {"type": "string"}},
-            "amount_text": {"type": ["string", "null"]},
-            "currency": {"type": ["string", "null"]},
-            "canonical_summary_en": {"type": "string", "description": "1-2 sentence factual summary in English"},
-            "canonical_summary_ru": {"type": "string", "description": "1-2 sentence factual summary in Russian"},
-            "extraction_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-        },
-        "required": [
-            "source_language", "event_type", "company_names", "person_names",
-            "product_names", "geography_names", "canonical_summary_en",
-            "canonical_summary_ru", "extraction_confidence",
+# Properties that are always required regardless of output language.
+_TOOL_PROPERTIES_BASE = {
+    "source_language": {"type": "string", "description": "ISO 639-1 language code of the source text"},
+    "event_type": {
+        "type": "string",
+        "enum": [
+            "funding", "mna", "earnings", "executive_change", "partnership",
+            "product_launch", "breach", "conference", "regulation", "other", "unknown",
         ],
     },
+    "company_names": {"type": "array", "items": {"type": "string"}},
+    "person_names": {"type": "array", "items": {"type": "string"}},
+    "product_names": {"type": "array", "items": {"type": "string"}},
+    "geography_names": {"type": "array", "items": {"type": "string"}},
+    "amount_text": {"type": ["string", "null"]},
+    "currency": {"type": ["string", "null"]},
+    "canonical_summary_en": {
+        "type": "string",
+        "description": "1-2 sentence factual summary in English",
+    },
+    "canonical_summary_ru": {
+        "type": "string",
+        "description": "1-2 sentence factual summary in Russian",
+    },
+    "extraction_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+}
+
+_BASE_REQUIRED = [
+    "source_language", "event_type", "company_names", "person_names",
+    "product_names", "geography_names", "extraction_confidence",
+]
+
+# Language-instruction appended to the prompt based on output_language.
+_LANG_PROMPT = {
+    "en": (
+        "Output language instruction: generate ONLY the English summary field "
+        "(canonical_summary_en). Do NOT generate canonical_summary_ru — "
+        "leave it empty or omit it. Do not spend tokens producing Russian text."
+    ),
+    "ru": (
+        "Output language instruction: generate ONLY the Russian summary field "
+        "(canonical_summary_ru). Do NOT generate canonical_summary_en — "
+        "leave it empty or omit it. Do not spend tokens producing English text."
+    ),
 }
 
 
-def extract_facts_llm(story_input: StoryInput) -> tuple[ExtractionResult, LlmUsageInfo]:
+def _build_tool_schema(output_language: str) -> dict:
+    """Return the tool schema with only the active language's summary in required."""
+    if output_language == "ru":
+        required_summary = ["canonical_summary_ru"]
+    else:
+        # Default to EN for any unrecognised language
+        required_summary = ["canonical_summary_en"]
+
+    return {
+        "name": _TOOL_NAME,
+        "description": (
+            "Extract structured facts from a cybersecurity news article. "
+            "Return all fields even if values are empty lists or null."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": _TOOL_PROPERTIES_BASE,
+            "required": _BASE_REQUIRED + required_summary,
+        },
+    }
+
+
+def extract_facts_llm(
+    story_input: StoryInput,
+    output_language: str = "en",
+) -> tuple[ExtractionResult, LlmUsageInfo]:
     """
     Call Anthropic with tool-use to extract structured facts from a story.
+
+    output_language controls which summary field is required in the tool schema
+    and adds an explicit instruction to skip the unused language.
+
     Returns (ExtractionResult, LlmUsageInfo).
     """
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -67,13 +107,18 @@ def extract_facts_llm(story_input: StoryInput) -> tuple[ExtractionResult, LlmUsa
         text_parts.append(f"Text: {story_input.text}")
     if story_input.url:
         text_parts.append(f"URL: {story_input.url}")
-    prompt = "\n\n".join(text_parts) or "(no content)"
+    content = "\n\n".join(text_parts) or "(no content)"
+
+    lang_instruction = _LANG_PROMPT.get(output_language, _LANG_PROMPT["en"])
+    prompt = f"{lang_instruction}\n\n{content}"
+
+    tool_schema = _build_tool_schema(output_language)
 
     try:
         response = client.messages.create(
             model=settings.extraction_model,
             max_tokens=1024,
-            tools=[_TOOL_SCHEMA],
+            tools=[tool_schema],
             tool_choice={"type": "tool", "name": _TOOL_NAME},
             messages=[{"role": "user", "content": prompt}],
         )

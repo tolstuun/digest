@@ -209,7 +209,7 @@ def test_extract_passes_text_from_raw_payload(db):
 
     captured: list = []
 
-    def capture_input(story_input):
+    def capture_input(story_input, output_language="en"):
         captured.append(story_input)
         return _mock_result(), _mock_usage()
 

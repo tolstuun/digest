@@ -34,4 +34,9 @@ scheduler:
 
 digest:
   output_language: "en"                     # rendered digest language: "en" or "ru"
+                                            # Controls the internal mass-stage LLM pipeline:
+                                            # extraction and scoring generate only the
+                                            # configured language's summary/why-it-matters
+                                            # fields. The unused language is not requested,
+                                            # saving tokens on every story and cluster.
   model_writing: "claude-haiku-4-5-20251001" # model for final digest-writing stage
