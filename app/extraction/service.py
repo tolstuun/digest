@@ -23,6 +23,7 @@ def extract_story_facts(
     db: Session,
     story: Story,
     pipeline_run_id: Optional[uuid.UUID] = None,
+    output_language: Optional[str] = None,
 ) -> tuple[StoryFacts, bool]:
     """
     Extract facts from *story* using LLM and persist to story_facts.
@@ -41,7 +42,8 @@ def extract_story_facts(
         url=story.canonical_url or story.url,
     )
 
-    result, llm_usage = extract_facts_llm(story_input)
+    lang = output_language or settings.digest.output_language
+    result, llm_usage = extract_facts_llm(story_input, output_language=lang)
     raw_output = result.model_dump()
 
     existing = db.query(StoryFacts).filter_by(story_id=story.id).first()
