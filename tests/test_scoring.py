@@ -366,19 +366,21 @@ def test_assess_endpoint_idempotent(client, db):
 
 def test_run_assess_skips_irrelevant_cluster_before_llm(db):
     """Clusters that fail the companies_business gate are skipped before the LLM is called."""
+    from datetime import date
     from app.orchestration.service import _run_assess
 
     cluster, _, _ = _make_cluster(db, event_type="funding", company_names=["Starbucks Coffee"])
     with patch("app.scoring.service.assess_cluster_llm") as mock_llm:
-        result = _run_assess(db)
+        result = _run_assess(db, run_date=date.today(), max_assess=100)
 
     mock_llm.assert_not_called()
-    assert result["skipped"] == 1
+    assert result["skipped_gate"] == 1
     assert result["assessed"] == 0
 
 
 def test_run_assess_processes_relevant_cluster(db):
     """Clusters that pass the companies_business gate proceed to LLM assessment."""
+    from datetime import date
     from app.orchestration.service import _run_assess
 
     cluster, _, _ = _make_cluster(db, event_type="funding", company_names=["CrowdStrike"])
@@ -386,7 +388,7 @@ def test_run_assess_processes_relevant_cluster(db):
         "app.scoring.service.assess_cluster_llm",
         return_value=(_mock_assessment(), _mock_usage()),
     ):
-        result = _run_assess(db)
+        result = _run_assess(db, run_date=date.today(), max_assess=100)
 
     assert result["assessed"] == 1
-    assert result["skipped"] == 0
+    assert result["skipped_gate"] == 0

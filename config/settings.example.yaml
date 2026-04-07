@@ -40,3 +40,5 @@ digest:
                                             # fields. The unused language is not requested,
                                             # saving tokens on every story and cluster.
   model_writing: "claude-haiku-4-5-20251001" # model for final digest-writing stage
+  max_extract_facts_per_run: 75             # hard cap on extract_facts LLM calls per daily run
+  max_assess_per_run: 75                    # hard cap on assess LLM calls per daily run

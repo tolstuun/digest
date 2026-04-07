@@ -77,6 +77,10 @@ class DigestConfig:
     output_language: str = "en"
     # Model used for the final digest-writing LLM stage.
     model_writing: str = "claude-haiku-4-5-20251001"
+    # Hard cap on LLM calls per daily run to control cost.
+    # If the cap is hit the step stops and records capped=True in its details.
+    max_extract_facts_per_run: int = 75
+    max_assess_per_run: int = 75
 
 
 # ── top-level settings ────────────────────────────────────────────────────────
@@ -200,6 +204,10 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             s.digest.output_language = str(dg_data["output_language"])
         if "model_writing" in dg_data:
             s.digest.model_writing = str(dg_data["model_writing"])
+        if "max_extract_facts_per_run" in dg_data:
+            s.digest.max_extract_facts_per_run = int(dg_data["max_extract_facts_per_run"])
+        if "max_assess_per_run" in dg_data:
+            s.digest.max_assess_per_run = int(dg_data["max_assess_per_run"])
 
     return s
 

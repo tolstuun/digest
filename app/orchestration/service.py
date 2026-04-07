@@ -33,7 +33,8 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy import Date, func
+from sqlalchemy.orm import Session, aliased
 
 from app.clustering.service import cluster_story
 from app.config import Settings
@@ -169,18 +170,28 @@ def _run_normalize(db: Session) -> dict:
 
 def _run_extract_facts(
     db: Session,
+    run_date: date,
+    max_facts: int,
     pipeline_run_id: Optional[uuid.UUID] = None,
     output_language: Optional[str] = None,
 ) -> dict:
-    # Stories that don't yet have a StoryFacts row
+    # Stories for run_date (COALESCE published_at, created_at) that lack a StoryFacts row
     stories = (
         db.query(Story)
         .outerjoin(StoryFacts, Story.id == StoryFacts.story_id)
         .filter(StoryFacts.id.is_(None))
+        .filter(
+            func.cast(func.coalesce(Story.published_at, Story.created_at), Date) == run_date
+        )
         .all()
     )
-    new = updated = errors = 0
+    eligible = len(stories)
+    capped = False
+    processed = new = updated = errors = 0
     for story in stories:
+        if processed >= max_facts:
+            capped = True
+            break
         try:
             _, created = extract_story_facts(
                 db, story,
@@ -196,7 +207,15 @@ def _run_extract_facts(
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("extract_facts failed story=%s: %s", story.id, exc)
-    return {"total": len(stories), "new": new, "updated": updated, "errors": errors}
+        processed += 1
+    return {
+        "eligible": eligible,
+        "processed": processed,
+        "capped": capped,
+        "new": new,
+        "updated": updated,
+        "errors": errors,
+    }
 
 
 def _run_cluster_event(db: Session) -> dict:
@@ -222,28 +241,48 @@ def _run_cluster_event(db: Session) -> dict:
 
 def _run_assess(
     db: Session,
+    run_date: date,
+    max_assess: int,
     pipeline_run_id: Optional[uuid.UUID] = None,
     output_language: Optional[str] = None,
 ) -> dict:
-    # Clusters without an assessment row
+    # Clusters for run_date without an assessment row.
+    # Date resolved via: rep_story.published_at → rep_story.created_at → cluster.created_at
+    RepStory = aliased(Story)
     clusters = (
         db.query(EventCluster)
         .outerjoin(
             EventClusterAssessment,
             EventCluster.id == EventClusterAssessment.event_cluster_id,
         )
+        .outerjoin(RepStory, EventCluster.representative_story_id == RepStory.id)
         .filter(EventClusterAssessment.id.is_(None))
+        .filter(
+            func.cast(
+                func.coalesce(
+                    RepStory.published_at,
+                    RepStory.created_at,
+                    EventCluster.created_at,
+                ),
+                Date,
+            ) == run_date
+        )
         .all()
     )
-    assessed = errors = skipped = 0
+    eligible = len(clusters)
+    capped = False
+    processed = assessed = errors = skipped_gate = 0
     for cluster in clusters:
         if not cluster_passes_any_section_gate(db, cluster):
-            skipped += 1
+            skipped_gate += 1
             logger.debug(
                 "assess skipped cluster=%s: fails all section relevance gates",
                 cluster.id,
             )
             continue
+        if processed >= max_assess:
+            capped = True
+            break
         try:
             assess_cluster(
                 db, cluster,
@@ -256,7 +295,15 @@ def _run_assess(
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("assess failed cluster=%s: %s", cluster.id, exc)
-    return {"total": len(clusters), "assessed": assessed, "skipped": skipped, "errors": errors}
+        processed += 1
+    return {
+        "eligible": eligible,
+        "processed": processed,
+        "skipped_gate": skipped_gate,
+        "capped": capped,
+        "assessed": assessed,
+        "errors": errors,
+    }
 
 
 def _run_assemble_digest(db: Session, run_date: date) -> dict:
@@ -439,9 +486,9 @@ def run_daily_pipeline(
     step_executors = [
         ("ingest",           lambda: _run_ingest(db)),
         ("normalize",        lambda: _run_normalize(db)),
-        ("extract_facts",    lambda: _run_extract_facts(db, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
+        ("extract_facts",    lambda: _run_extract_facts(db, run_date, cfg.digest.max_extract_facts_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
         ("cluster_event",    lambda: _run_cluster_event(db)),
-        ("assess",           lambda: _run_assess(db, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
+        ("assess",           lambda: _run_assess(db, run_date, cfg.digest.max_assess_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
         ("assemble_digest",  lambda: _run_assemble_digest(db, run_date)),
         ("write_digest",     lambda: _run_write_digest(db, run_date, cfg, pipeline_run_id=run_id)),
         ("render_digest",    lambda: _run_render_digest(db, run_date)),
