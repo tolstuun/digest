@@ -21,6 +21,15 @@ llm:
   api_key: ""                               # set your Anthropic API key here
   model_extraction: "claude-haiku-4-5-20251001"
   model_scoring: "claude-haiku-4-5-20251001"
+  # Batch extract mode — uses Anthropic Message Batches for extract_facts.
+  # Intended for async "digest for yesterday" workflows (scheduled daily runs).
+  # When true, all eligible stories are submitted in one batch request.
+  # The step polls until the batch is "ended" or timeout is hit.
+  # On timeout the step fails hard — there is NO sync fallback.
+  # Cost: ~50% cheaper than synchronous calls via Anthropic's batch pricing.
+  use_batch_extract: false
+  batch_poll_interval_seconds: 30           # how often to check batch status
+  batch_timeout_minutes: 90                 # fail the step if not done within N minutes
 
 telegram:
   enabled: false

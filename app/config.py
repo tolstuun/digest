@@ -52,6 +52,13 @@ class LLMConfig:
     api_key: str = ""
     model_extraction: str = "claude-haiku-4-5-20251001"
     model_scoring: str = "claude-haiku-4-5-20251001"
+    # Batch extract mode: send all eligible stories as one Anthropic Message Batch.
+    # Intended for async "digest for yesterday" workflows where latency is acceptable.
+    # When False (default), extract_facts runs synchronously per-story.
+    # On timeout the step fails hard — there is NO sync fallback.
+    use_batch_extract: bool = False
+    batch_poll_interval_seconds: int = 30
+    batch_timeout_minutes: int = 90
 
 
 @dataclass
@@ -177,6 +184,12 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             s.llm.model_extraction = llm_data["model_extraction"]
         if "model_scoring" in llm_data:
             s.llm.model_scoring = llm_data["model_scoring"]
+        if "use_batch_extract" in llm_data:
+            s.llm.use_batch_extract = bool(llm_data["use_batch_extract"])
+        if "batch_poll_interval_seconds" in llm_data:
+            s.llm.batch_poll_interval_seconds = int(llm_data["batch_poll_interval_seconds"])
+        if "batch_timeout_minutes" in llm_data:
+            s.llm.batch_timeout_minutes = int(llm_data["batch_timeout_minutes"])
 
     if "telegram" in data:
         tg_data = data["telegram"]

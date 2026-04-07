@@ -46,7 +46,7 @@ from app.digest.service import (
     assemble_digest,
 )
 from app.digest_writer.service import write_digest_entries
-from app.extraction.service import extract_story_facts
+from app.extraction.service import extract_story_facts, extract_story_facts_batch_run
 from app.ingestion.service import ingest_source
 from app.llm_usage.errors import AnthropicBillingError
 from app.models.digest_run import DigestRun
@@ -174,6 +174,7 @@ def _run_extract_facts(
     max_facts: int,
     pipeline_run_id: Optional[uuid.UUID] = None,
     output_language: Optional[str] = None,
+    cfg: Optional[Settings] = None,
 ) -> dict:
     # Stories for run_date (COALESCE published_at, created_at) that lack a StoryFacts row
     stories = (
@@ -186,12 +187,21 @@ def _run_extract_facts(
         .all()
     )
     eligible = len(stories)
-    capped = False
+    capped = eligible > max_facts
+    stories_to_process = stories[:max_facts] if capped else stories
+
+    # ── batch path ────────────────────────────────────────────────────────────
+    if cfg is not None and cfg.llm.use_batch_extract and stories_to_process:
+        batch_result = extract_story_facts_batch_run(
+            db, stories_to_process, cfg,
+            pipeline_run_id=pipeline_run_id,
+            output_language=output_language,
+        )
+        return {"eligible": eligible, "capped": capped, **batch_result}
+
+    # ── sync path (default) ───────────────────────────────────────────────────
     processed = new = updated = errors = 0
-    for story in stories:
-        if processed >= max_facts:
-            capped = True
-            break
+    for story in stories_to_process:
         try:
             _, created = extract_story_facts(
                 db, story,
@@ -486,7 +496,7 @@ def run_daily_pipeline(
     step_executors = [
         ("ingest",           lambda: _run_ingest(db)),
         ("normalize",        lambda: _run_normalize(db)),
-        ("extract_facts",    lambda: _run_extract_facts(db, run_date, cfg.digest.max_extract_facts_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
+        ("extract_facts",    lambda: _run_extract_facts(db, run_date, cfg.digest.max_extract_facts_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language, cfg=cfg)),
         ("cluster_event",    lambda: _run_cluster_event(db)),
         ("assess",           lambda: _run_assess(db, run_date, cfg.digest.max_assess_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
         ("assemble_digest",  lambda: _run_assemble_digest(db, run_date)),
