@@ -62,7 +62,7 @@ from app.normalization.service import normalize_raw_item
 from app.publishing.service import publish_to_telegram
 from app.publishing.telegram import send_operational_alert
 from app.rendering.service import render_digest_page
-from app.scoring.service import assess_cluster
+from app.scoring.service import assess_cluster, assess_cluster_batch_run
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +255,7 @@ def _run_assess(
     max_assess: int,
     pipeline_run_id: Optional[uuid.UUID] = None,
     output_language: Optional[str] = None,
+    cfg: Optional[Settings] = None,
 ) -> dict:
     # Clusters for run_date without an assessment row.
     # Date resolved via: rep_story.published_at → rep_story.created_at → cluster.created_at
@@ -280,19 +281,41 @@ def _run_assess(
         .all()
     )
     eligible = len(clusters)
-    capped = False
-    processed = assessed = errors = skipped_gate = 0
+
+    # Pre-filter: section gate must pass before any LLM call (batch or sync)
+    gate_pass = []
+    skipped_gate = 0
     for cluster in clusters:
-        if not cluster_passes_any_section_gate(db, cluster):
+        if cluster_passes_any_section_gate(db, cluster):
+            gate_pass.append(cluster)
+        else:
             skipped_gate += 1
             logger.debug(
                 "assess skipped cluster=%s: fails all section relevance gates",
                 cluster.id,
             )
-            continue
-        if processed >= max_assess:
-            capped = True
-            break
+
+    # Pre-slice: apply cap before branching — batch input = final scoped shortlist
+    capped = len(gate_pass) > max_assess
+    clusters_to_process = gate_pass[:max_assess] if capped else gate_pass
+
+    # ── batch path ────────────────────────────────────────────────────────────
+    if cfg is not None and cfg.llm.use_batch_assess and clusters_to_process:
+        batch_result = assess_cluster_batch_run(
+            db, clusters_to_process, cfg,
+            pipeline_run_id=pipeline_run_id,
+            output_language=output_language,
+        )
+        return {
+            "eligible": eligible,
+            "skipped_gate": skipped_gate,
+            "capped": capped,
+            **batch_result,
+        }
+
+    # ── sync path (default) ───────────────────────────────────────────────────
+    processed = assessed = errors = 0
+    for cluster in clusters_to_process:
         try:
             assess_cluster(
                 db, cluster,
@@ -498,7 +521,7 @@ def run_daily_pipeline(
         ("normalize",        lambda: _run_normalize(db)),
         ("extract_facts",    lambda: _run_extract_facts(db, run_date, cfg.digest.max_extract_facts_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language, cfg=cfg)),
         ("cluster_event",    lambda: _run_cluster_event(db)),
-        ("assess",           lambda: _run_assess(db, run_date, cfg.digest.max_assess_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language)),
+        ("assess",           lambda: _run_assess(db, run_date, cfg.digest.max_assess_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language, cfg=cfg)),
         ("assemble_digest",  lambda: _run_assemble_digest(db, run_date)),
         ("write_digest",     lambda: _run_write_digest(db, run_date, cfg, pipeline_run_id=run_id)),
         ("render_digest",    lambda: _run_render_digest(db, run_date)),

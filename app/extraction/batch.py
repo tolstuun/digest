@@ -28,13 +28,10 @@ import anthropic
 
 from app.extraction.llm import _LANG_PROMPT, _TOOL_NAME, _build_tool_schema
 from app.extraction.schemas import ExtractionResult, StoryInput
+from app.llm_usage.errors import BatchTimeoutError  # single definition, shared with scoring
 from app.llm_usage.schemas import LlmUsageInfo
 
 logger = logging.getLogger(__name__)
-
-
-class BatchTimeoutError(Exception):
-    """Raised when an Anthropic batch does not complete within the configured timeout."""
 
 
 @dataclass

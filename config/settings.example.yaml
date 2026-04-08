@@ -28,6 +28,7 @@ llm:
   # On timeout the step fails hard — there is NO sync fallback.
   # Cost: ~50% cheaper than synchronous calls via Anthropic's batch pricing.
   use_batch_extract: false
+  use_batch_assess: false
   batch_poll_interval_seconds: 30           # how often to check batch status
   batch_timeout_minutes: 90                 # fail the step if not done within N minutes
 
