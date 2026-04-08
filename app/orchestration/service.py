@@ -48,7 +48,7 @@ from app.digest.service import (
 from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts, extract_story_facts_batch_run
 from app.ingestion.service import ingest_source
-from app.llm_usage.errors import AnthropicBillingError
+from app.llm_usage.errors import AnthropicBillingError, AnthropicOverloadedError
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
@@ -559,6 +559,18 @@ def run_daily_pipeline(
                 send_operational_alert(
                     cfg.telegram.bot_token, cfg.telegram.chat_id, alert_text
                 )
+            break
+        except AnthropicOverloadedError as exc:
+            # Transient provider overload — fail the run but do NOT send a
+            # billing/quota alert.  This is a provider outage, not an account issue.
+            error_msg = f"{type(exc).__name__}: {exc}"
+            logger.error(
+                "pipeline_run=%s step=%s PROVIDER OVERLOADED: %s", run.id, step_name, error_msg
+            )
+            _finish_step(db, step, status="failed", error=error_msg)
+            step_results[step_name] = {"error": error_msg, "provider_overloaded": True}
+            failed_step = step_name
+            _finish_run(db, run, status="failed", error=error_msg)
             break
         except Exception as exc:  # noqa: BLE001
             error_msg = f"{type(exc).__name__}: {exc}"

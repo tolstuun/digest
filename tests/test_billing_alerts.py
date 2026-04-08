@@ -29,8 +29,11 @@ from app.config import (
 )
 from app.llm_usage.errors import (
     AnthropicBillingError,
+    AnthropicOverloadedError,
     is_billing_quota_error,
+    is_overloaded_error,
     raise_if_billing_error,
+    raise_if_overloaded_error,
 )
 from app.llm_usage.schemas import LlmUsageInfo
 from app.llm_usage.service import get_cost_for_run, record_usage
@@ -120,13 +123,75 @@ def test_402_status_is_billing():
     assert is_billing_quota_error(exc) is True
 
 
-def test_529_status_is_billing():
+def test_529_with_quota_phrase_is_billing():
+    """529 whose body contains a billing phrase (quota) is still a billing error."""
+    exc = anthropic.APIStatusError(
+        message="Quota exceeded",
+        response=MagicMock(status_code=529, headers={}),
+        body={"error": {"type": "quota_exceeded", "message": "quota exceeded"}},
+    )
+    assert is_billing_quota_error(exc) is True
+
+
+def test_529_overloaded_error_is_not_billing():
+    """529 overloaded_error is transient — must NOT be classified as billing."""
     exc = anthropic.APIStatusError(
         message="Overloaded",
         response=MagicMock(status_code=529, headers={}),
-        body={"error": {"message": "quota exceeded"}},
+        body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
     )
-    assert is_billing_quota_error(exc) is True
+    assert is_billing_quota_error(exc) is False
+
+
+def test_529_overloaded_error_is_detected_as_overloaded():
+    """is_overloaded_error returns True for 529 overloaded_error."""
+    exc = anthropic.APIStatusError(
+        message="Overloaded",
+        response=MagicMock(status_code=529, headers={}),
+        body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+    assert is_overloaded_error(exc) is True
+
+
+def test_529_with_billing_body_is_not_overloaded():
+    """529 with non-overloaded body is not classified as overloaded."""
+    exc = anthropic.APIStatusError(
+        message="Quota exceeded",
+        response=MagicMock(status_code=529, headers={}),
+        body={"error": {"type": "quota_exceeded", "message": "quota exceeded"}},
+    )
+    assert is_overloaded_error(exc) is False
+
+
+def test_non_529_is_not_overloaded():
+    """Non-529 errors are not overloaded errors."""
+    exc = anthropic.APIStatusError(
+        message="Internal error",
+        response=MagicMock(status_code=500, headers={}),
+        body={"error": {"type": "overloaded_error"}},
+    )
+    assert is_overloaded_error(exc) is False
+
+
+def test_raise_if_overloaded_error_raises_wrapper():
+    """raise_if_overloaded_error converts 529 overloaded to AnthropicOverloadedError."""
+    exc = anthropic.APIStatusError(
+        message="Overloaded",
+        response=MagicMock(status_code=529, headers={}),
+        body={"error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+    with pytest.raises(AnthropicOverloadedError):
+        raise_if_overloaded_error(exc)
+
+
+def test_raise_if_overloaded_error_noop_for_billing():
+    """raise_if_overloaded_error does nothing for a true billing error."""
+    exc = anthropic.AuthenticationError(
+        message="Invalid key",
+        response=MagicMock(status_code=401, headers={}),
+        body={},
+    )
+    raise_if_overloaded_error(exc)  # must not raise
 
 
 def test_rate_limit_with_billing_phrase():
@@ -397,3 +462,79 @@ def test_pipeline_run_error_message_contains_billing_class(db):
     run = db.get(PipelineRun, run_id)
     assert run is not None
     assert "AnthropicBillingError" in (run.error_message or "")
+
+
+# ── AnthropicOverloadedError: pipeline behavior ───────────────────────────────
+
+
+def _run_pipeline_with_overloaded_on_write_digest(db) -> tuple[dict, MagicMock]:
+    """
+    Helper: run the pipeline where write_digest raises AnthropicOverloadedError.
+    Returns (summary, telegram_mock).
+    """
+    overloaded_exc = AnthropicOverloadedError(
+        "Anthropic provider overloaded (transient): Overloaded",
+        original=Exception("Overloaded"),
+    )
+    cfg = _make_settings(telegram_enabled=True)
+    tg_mock = MagicMock()
+
+    with patch.multiple(
+        "app.orchestration.service",
+        _run_ingest=MagicMock(return_value={"new": 0, "skipped": 0, "errors": 0, "sources": 0}),
+        _run_normalize=MagicMock(return_value={"total": 0, "new": 0, "skipped": 0}),
+        _run_extract_facts=MagicMock(return_value={"eligible": 0, "processed": 0}),
+        _run_cluster_event=MagicMock(return_value={"total": 0, "clustered": 0, "not_clustered": 0}),
+        _run_assess=MagicMock(return_value={"eligible": 0, "assessed": 0}),
+        _run_assemble_digest=MagicMock(return_value={"digest_run_id": str(uuid.uuid4()), "total_included": 0, "created": True, "sections": []}),
+        _run_write_digest=MagicMock(side_effect=overloaded_exc),
+        _run_render_digest=MagicMock(return_value={"digest_page_id": str(uuid.uuid4()), "slug": "test", "created": True}),
+        _run_publish_telegram=MagicMock(return_value={"skipped": True}),
+        send_operational_alert=tg_mock,
+    ):
+        summary = run_daily_pipeline(db, TARGET_DATE, cfg=cfg)
+
+    return summary, tg_mock
+
+
+def test_overloaded_error_fails_pipeline_run(db):
+    """AnthropicOverloadedError marks the pipeline run as failed."""
+    summary, _ = _run_pipeline_with_overloaded_on_write_digest(db)
+    assert summary["status"] == "failed"
+    assert summary["failed_step"] == "write_digest"
+
+
+def test_overloaded_error_no_telegram_alert(db):
+    """No billing/quota Telegram alert is sent for transient provider overload."""
+    _, tg_mock = _run_pipeline_with_overloaded_on_write_digest(db)
+    tg_mock.assert_not_called()
+
+
+def test_overloaded_error_step_marked_failed(db):
+    """The write_digest step row is persisted as failed with AnthropicOverloadedError."""
+    summary, _ = _run_pipeline_with_overloaded_on_write_digest(db)
+    run_id = uuid.UUID(summary["pipeline_run_id"])
+    failed_steps = (
+        db.query(PipelineRunStep)
+        .filter_by(pipeline_run_id=run_id, status="failed")
+        .all()
+    )
+    assert len(failed_steps) == 1
+    assert failed_steps[0].step_name == "write_digest"
+    assert "AnthropicOverloadedError" in (failed_steps[0].error_message or "")
+
+
+def test_overloaded_error_run_error_contains_overloaded_class(db):
+    """PipelineRun.error_message contains 'AnthropicOverloadedError', not 'AnthropicBillingError'."""
+    summary, _ = _run_pipeline_with_overloaded_on_write_digest(db)
+    run_id = uuid.UUID(summary["pipeline_run_id"])
+    run = db.get(PipelineRun, run_id)
+    assert "AnthropicOverloadedError" in (run.error_message or "")
+    assert "AnthropicBillingError" not in (run.error_message or "")
+
+
+def test_overloaded_billing_alert_not_sent_even_when_telegram_enabled(db):
+    """Billing alert is NOT sent for overloaded error even if telegram.enabled=True."""
+    summary, tg_mock = _run_pipeline_with_overloaded_on_write_digest(db)
+    assert summary["status"] == "failed"
+    tg_mock.assert_not_called()

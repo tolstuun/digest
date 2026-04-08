@@ -6,8 +6,14 @@ calls the LLM to produce final polished copy in the configured language,
 and updates each entry with final_summary and final_why_it_matters.
 
 Idempotent: entries that already have final_summary set are skipped unless force=True.
+
+Retry policy for transient provider overload (AnthropicOverloadedError):
+  Up to _OVERLOAD_MAX_RETRIES attempts per entry, with increasing backoff.
+  If still overloaded after all attempts, AnthropicOverloadedError is re-raised
+  so the pipeline step and run fail explicitly — no silent partial output.
 """
 import logging
+import time
 import uuid
 from typing import Optional
 
@@ -17,8 +23,9 @@ from app.config import Settings
 from app.digest.filters import should_include_in_companies_business
 from app.digest.service import SECTION_NAME
 from app.digest_writer.llm import write_digest_entry_llm
-from app.digest_writer.schemas import DigestEntryInput
-from app.llm_usage.errors import AnthropicBillingError
+from app.digest_writer.schemas import DigestEntryInput, DigestEntryOutput
+from app.llm_usage.errors import AnthropicBillingError, AnthropicOverloadedError
+from app.llm_usage.schemas import LlmUsageInfo
 from app.llm_usage.service import record_usage
 from app.models.digest_entry import DigestEntry
 from app.models.digest_run import DigestRun
@@ -29,6 +36,43 @@ from app.models.story_facts import StoryFacts
 logger = logging.getLogger(__name__)
 
 _STAGE = "write_digest"
+
+# Retry config for transient provider overload only.
+# Backoff is per-attempt: wait _OVERLOAD_BACKOFF_SECONDS[attempt] before the next try.
+_OVERLOAD_MAX_RETRIES = 3
+_OVERLOAD_BACKOFF_SECONDS = [5, 15, 30]
+
+
+def _call_llm_with_overload_retry(
+    entry_input: DigestEntryInput,
+    model_name: str,
+    api_key: str,
+    entry_id: object,
+) -> tuple[DigestEntryOutput, LlmUsageInfo]:
+    """
+    Call write_digest_entry_llm with retry on transient provider overload.
+
+    Retries up to _OVERLOAD_MAX_RETRIES times with increasing backoff.
+    Re-raises AnthropicOverloadedError after all attempts are exhausted so the
+    caller (write_digest_entries) can propagate it as a hard step failure.
+    """
+    for attempt in range(_OVERLOAD_MAX_RETRIES):
+        try:
+            return write_digest_entry_llm(entry_input, model_name, api_key)
+        except AnthropicOverloadedError:
+            if attempt + 1 >= _OVERLOAD_MAX_RETRIES:
+                raise
+            wait = _OVERLOAD_BACKOFF_SECONDS[attempt]
+            logger.warning(
+                "write_digest entry=%s provider overloaded, attempt %d/%d, retry in %ds",
+                entry_id,
+                attempt + 1,
+                _OVERLOAD_MAX_RETRIES,
+                wait,
+            )
+            time.sleep(wait)
+    # Unreachable — loop always raises or returns, but satisfies type checker
+    raise AssertionError("unreachable")
 
 
 def write_digest_entries(
@@ -121,7 +165,9 @@ def write_digest_entries(
         )
 
         try:
-            result, usage = write_digest_entry_llm(entry_input, model_name, api_key)
+            result, usage = _call_llm_with_overload_retry(
+                entry_input, model_name, api_key, entry.id
+            )
             entry.final_summary = result.final_summary
             entry.final_why_it_matters = result.final_why_it_matters
             db.commit()
@@ -132,6 +178,11 @@ def write_digest_entries(
                 entry.id, output_language,
             )
         except AnthropicBillingError:
+            db.rollback()
+            raise
+        except AnthropicOverloadedError:
+            # Still overloaded after all retries — fail the step explicitly.
+            # No silent partial output: the caller must treat this as a hard failure.
             db.rollback()
             raise
         except Exception as exc:  # noqa: BLE001

@@ -11,7 +11,7 @@ import logging
 import anthropic
 
 from app.digest_writer.schemas import DigestEntryInput, DigestEntryOutput
-from app.llm_usage.errors import raise_if_billing_error
+from app.llm_usage.errors import raise_if_billing_error, raise_if_overloaded_error
 from app.llm_usage.schemas import LlmUsageInfo
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,7 @@ def write_digest_entry_llm(
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as exc:
+        raise_if_overloaded_error(exc)  # transient 529 — checked before billing
         raise_if_billing_error(exc)
         raise
 

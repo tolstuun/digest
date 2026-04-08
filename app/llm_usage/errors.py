@@ -1,11 +1,19 @@
 """
-Anthropic billing/quota error classification.
+Anthropic provider error classification.
 
-AnthropicBillingError is raised when the Anthropic API rejects a request
-due to insufficient credits, quota exhaustion, or payment failure.
+Two distinct hard-failure classes:
 
-These errors must fail the pipeline run immediately — do not catch and
-continue processing remaining items.
+AnthropicBillingError — true billing/quota/account-balance failures.
+  Raised when the API rejects a request due to insufficient credits, quota
+  exhaustion, or payment failure.  Triggers a Telegram billing alert and
+  immediate pipeline run failure.
+
+AnthropicOverloadedError — transient provider overload (HTTP 529 overloaded_error).
+  This is NOT a billing or account issue.  The API is temporarily overloaded.
+  write_digest retries with backoff; if still overloaded the pipeline step fails
+  clearly as a provider outage, with NO billing/quota alert sent.
+
+Both must fail the pipeline run — do not swallow them.
 """
 from __future__ import annotations
 
@@ -15,14 +23,15 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
-# Phrases that signal billing/quota problems in Anthropic error messages
+# Phrases that signal true billing/quota problems in Anthropic error messages.
+# "overloaded" is intentionally excluded — HTTP 529 overloaded_error is transient,
+# not a billing issue.
 _BILLING_PHRASES = (
     "insufficient_credits",
     "credit balance",
     "billing",
     "payment required",
     "quota",
-    "overloaded",
 )
 
 
@@ -32,6 +41,21 @@ class BatchTimeoutError(Exception):
     configured timeout. The pipeline step must be treated as a hard failure —
     there is NO sync fallback.
     """
+
+
+class AnthropicOverloadedError(RuntimeError):
+    """
+    Raised when an Anthropic API call returns HTTP 529 with error type
+    'overloaded_error'.  This is a transient provider outage, not a billing
+    or quota issue.
+
+    write_digest retries with backoff and re-raises this after max attempts,
+    failing the step and run without sending a billing/quota Telegram alert.
+    """
+
+    def __init__(self, message: str, original: Exception) -> None:
+        super().__init__(message)
+        self.__cause__ = original
 
 
 class AnthropicBillingError(RuntimeError):
@@ -48,6 +72,30 @@ class AnthropicBillingError(RuntimeError):
         self.__cause__ = original
 
 
+def _overloaded_body(body: object) -> bool:
+    """Return True if the error body indicates error type 'overloaded_error'."""
+    try:
+        if hasattr(body, "get"):
+            return str(body.get("error", {}).get("type", "")).lower() == "overloaded_error"  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def is_overloaded_error(exc: Exception) -> bool:
+    """
+    Return True if *exc* is a transient Anthropic provider overload.
+
+    Specifically: HTTP 529 with error type 'overloaded_error' in the body.
+    This is NOT a billing/quota issue and must NOT trigger billing alerts.
+    """
+    return (
+        isinstance(exc, anthropic.APIStatusError)
+        and exc.status_code == 529
+        and _overloaded_body(exc.body)
+    )
+
+
 def is_billing_quota_error(exc: Exception) -> bool:
     """
     Return True if *exc* looks like an Anthropic billing or quota error.
@@ -55,7 +103,8 @@ def is_billing_quota_error(exc: Exception) -> bool:
     Checks:
     - anthropic.AuthenticationError (invalid/suspended API key)
     - HTTP 402 Payment Required
-    - HTTP 529 (Anthropic overload / quota)
+    - HTTP 529 only when the body does NOT indicate 'overloaded_error'
+      (overloaded_error is a transient provider outage, not a billing issue)
     - HTTP 429 with billing-related message text
     - Any error message containing known billing phrases
     """
@@ -67,8 +116,20 @@ def is_billing_quota_error(exc: Exception) -> bool:
         return any(phrase in msg for phrase in _BILLING_PHRASES)
 
     if isinstance(exc, anthropic.APIStatusError):
-        if exc.status_code in (402, 529):
+        if exc.status_code == 402:
             return True
+        if exc.status_code == 529:
+            # Transient overload is NOT a billing error — classify separately
+            if _overloaded_body(exc.body):
+                return False
+            # 529 with billing phrases in body (e.g. quota exhaustion) is billing
+            try:
+                body = str(exc.body).lower() if exc.body else ""
+                if any(phrase in body for phrase in _BILLING_PHRASES):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+            return False
         if exc.status_code == 429:
             msg = (exc.message or "").lower()
             return any(phrase in msg for phrase in _BILLING_PHRASES)
@@ -93,4 +154,15 @@ def raise_if_billing_error(exc: Exception) -> None:
     if is_billing_quota_error(exc):
         raise AnthropicBillingError(
             f"Anthropic billing/quota error: {exc}", original=exc
+        ) from exc
+
+
+def raise_if_overloaded_error(exc: Exception) -> None:
+    """
+    If *exc* is a transient Anthropic provider overload, re-raise it as
+    AnthropicOverloadedError.  Otherwise do nothing.
+    """
+    if is_overloaded_error(exc):
+        raise AnthropicOverloadedError(
+            f"Anthropic provider overloaded (transient): {exc}", original=exc
         ) from exc
