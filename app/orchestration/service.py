@@ -40,6 +40,7 @@ from app.clustering.service import cluster_story
 from app.config import Settings
 from app.digest.filters import cluster_passes_any_section_gate
 from app.digest.service import (
+    ALL_SECTIONS,
     INCIDENTS_SECTION,
     PRODUCT_UPDATES_SECTION,
     SECTION_NAME,
@@ -348,7 +349,7 @@ def _run_assemble_digest(db: Session, run_date: date, cfg: Optional[Settings] = 
         limits[INCIDENTS_SECTION] = cfg.digest.max_incidents_entries
 
     results = []
-    for section in (SECTION_NAME, INCIDENTS_SECTION):
+    for section in ALL_SECTIONS:
         run, entries, created = assemble_digest(
             db,
             digest_date=run_date,
@@ -378,7 +379,7 @@ def _run_write_digest(
     pipeline_run_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """Write final digest copy for every section assembled for run_date."""
-    sections = (SECTION_NAME, INCIDENTS_SECTION)
+    sections = ALL_SECTIONS
     results = []
     for section in sections:
         run = (
@@ -398,7 +399,7 @@ def _run_render_digest(db: Session, run_date: date) -> dict:
     """Render an HTML page for every section's digest run for run_date."""
     from app.models.digest_page import DigestPage
 
-    sections = (SECTION_NAME, INCIDENTS_SECTION)
+    sections = ALL_SECTIONS
     results = []
     primary_page_id: Optional[str] = None
     for section in sections:
@@ -437,7 +438,7 @@ def _run_publish_telegram(
 
     from app.models.digest_page import DigestPage
 
-    sections = (SECTION_NAME, INCIDENTS_SECTION)
+    sections = ALL_SECTIONS
     results = []
     primary_pub_id: Optional[str] = None
     for section in sections:

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.clustering.service import cluster_story
 from app.config import settings
 from app.database import get_db
-from app.digest.service import MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
+from app.digest.service import ALL_SECTIONS, MAX_ENTRIES_DEFAULT, SECTION_NAME, assemble_digest
 from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts
 from app.ingestion.service import ingest_source
@@ -171,6 +171,7 @@ def trigger_assess_cluster(
 
 class AssembleDigestRequest(BaseModel):
     digest_date: date
+    section_name: str = SECTION_NAME
     max_entries: Optional[int] = None
 
 
@@ -179,20 +180,27 @@ def trigger_assemble_digest(
     req: AssembleDigestRequest, db: Session = Depends(get_db)
 ) -> dict:
     """
-    Manually trigger digest assembly for a given date and section (companies_business).
+    Manually trigger digest assembly for a given date and section.
+    section_name defaults to companies_business; valid values: companies_business,
+    product_updates, incidents.
     Deterministic and idempotent — repeated calls for the same date delete and rebuild the run.
     Returns: {digest_run_id, digest_date, section_name, total_candidates, total_included, created}.
     """
+    if req.section_name not in ALL_SECTIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid section_name '{req.section_name}'. Must be one of: {sorted(ALL_SECTIONS)}",
+        )
     max_entries = req.max_entries if req.max_entries is not None else MAX_ENTRIES_DEFAULT
     run, entries, created = assemble_digest(
         db,
         digest_date=req.digest_date,
-        section_name=SECTION_NAME,
+        section_name=req.section_name,
         max_entries=max_entries,
     )
     logger.info(
         "assemble-digest date=%s section=%s included=%d created=%s",
-        req.digest_date, SECTION_NAME, len(entries), created,
+        req.digest_date, req.section_name, len(entries), created,
     )
     return {
         "digest_run_id": str(run.id),
