@@ -187,6 +187,7 @@ def _run_full_pipeline_mocked(db, run_date=None, publish_telegram=False):
         )
         mock_write_llm.return_value = (
             MagicMock(
+                final_title="Acme Corp Raises $50M",
                 final_summary="Acme raised $50M in Series B.",
                 final_why_it_matters="Significant deal.",
             ),
@@ -704,3 +705,179 @@ def test_ui_run_daily_invalid_date(client):
     )
     assert resp.status_code == 303
     assert "err" in resp.headers["location"]
+
+
+# ── product_updates pipeline parity tests ─────────────────────────────────────
+
+from app.digest.service import ALL_SECTIONS, PRODUCT_UPDATES_SECTION, SECTION_NAME, INCIDENTS_SECTION
+from app.models.digest_run import DigestRun
+from app.models.digest_page import DigestPage
+
+
+def test_assemble_digest_step_includes_all_three_sections(db):
+    """assemble_digest step result lists all three sections."""
+    summary = _run_full_pipeline_mocked(db)
+    sections_result = summary["step_results"]["assemble_digest"]["sections"]
+    section_names = {s["section"] for s in sections_result}
+    assert section_names == set(ALL_SECTIONS), (
+        f"Expected {set(ALL_SECTIONS)}, got {section_names}"
+    )
+
+
+def test_write_digest_step_includes_all_three_sections(db):
+    """write_digest step result lists all three sections."""
+    summary = _run_full_pipeline_mocked(db)
+    sections_result = summary["step_results"]["write_digest"]["sections"]
+    section_names = {s["section"] for s in sections_result}
+    assert section_names == set(ALL_SECTIONS)
+
+
+def test_render_digest_step_includes_all_three_sections(db):
+    """render_digest step result lists all three sections."""
+    summary = _run_full_pipeline_mocked(db)
+    sections_result = summary["step_results"]["render_digest"]["sections"]
+    section_names = {s["section"] for s in sections_result}
+    assert section_names == set(ALL_SECTIONS)
+
+
+def test_product_updates_digest_run_created(db):
+    """Daily pipeline creates a DigestRun row for product_updates."""
+    _run_full_pipeline_mocked(db)
+    run = (
+        db.query(DigestRun)
+        .filter_by(digest_date=TARGET_DATE, section_name=PRODUCT_UPDATES_SECTION)
+        .first()
+    )
+    assert run is not None
+
+
+def test_product_updates_digest_page_rendered(db):
+    """Daily pipeline renders a DigestPage for product_updates."""
+    _run_full_pipeline_mocked(db)
+    run = (
+        db.query(DigestRun)
+        .filter_by(digest_date=TARGET_DATE, section_name=PRODUCT_UPDATES_SECTION)
+        .first()
+    )
+    assert run is not None
+    page = db.query(DigestPage).filter_by(digest_run_id=run.id).first()
+    assert page is not None
+    assert page.slug is not None
+
+
+def test_publish_telegram_step_includes_all_three_sections(db):
+    """publish_telegram step iterates all three sections when telegram is enabled."""
+    cfg = _make_settings(telegram_enabled=True)
+    run_date = TARGET_DATE
+    with (
+        patch("app.orchestration.service.ingest_source", side_effect=_mock_ingest_returns_empty),
+        patch("app.extraction.service.extract_facts_llm") as mock_llm,
+        patch("app.scoring.llm.assess_cluster_llm") as mock_assess_llm,
+        patch("app.digest_writer.service.write_digest_entry_llm") as mock_write_llm,
+        patch("app.publishing.service.send_telegram_message", return_value="42") as mock_tg,
+    ):
+        mock_llm.return_value = (
+            MagicMock(
+                event_type="funding",
+                company_names=["Acme Corp"],
+                person_names=[], product_names=[], geography_names=[],
+                amount_text="50M", currency="USD", source_language="en",
+                canonical_summary_en="Acme raised $50M.",
+                canonical_summary_ru="Acme привлекла $50M.",
+                extraction_confidence=0.9,
+            ),
+            _mock_usage(),
+        )
+        mock_assess_llm.return_value = (
+            MagicMock(
+                primary_section="companies_business", llm_score=0.8,
+                include_in_digest=True,
+                why_it_matters_en="Big deal.", why_it_matters_ru="Важная сделка.",
+                editorial_notes=None,
+            ),
+            _mock_usage(),
+        )
+        mock_write_llm.return_value = (
+            MagicMock(
+                final_title="Acme Corp Raises $50M",
+                final_summary="Acme raised $50M.",
+                final_why_it_matters="Significant deal.",
+            ),
+            _mock_usage(),
+        )
+        summary = run_daily_pipeline(
+            db=db, run_date=run_date, trigger_type="manual",
+            publish_telegram=True, cfg=cfg,
+        )
+
+    pub_result = summary["step_results"]["publish_telegram"]
+    assert "sections" in pub_result
+    section_names = {s["section"] for s in pub_result["sections"]}
+    assert section_names == set(ALL_SECTIONS)
+
+
+def test_all_three_sections_have_digest_runs_after_pipeline(db):
+    """After a full pipeline run, all three sections have DigestRun rows."""
+    _run_full_pipeline_mocked(db)
+    for section in ALL_SECTIONS:
+        run = (
+            db.query(DigestRun)
+            .filter_by(digest_date=TARGET_DATE, section_name=section)
+            .first()
+        )
+        assert run is not None, f"No DigestRun found for section={section}"
+
+
+def test_all_three_sections_have_pages_after_pipeline(db):
+    """After a full pipeline run, all three sections have rendered DigestPage rows."""
+    _run_full_pipeline_mocked(db)
+    for section in ALL_SECTIONS:
+        run = (
+            db.query(DigestRun)
+            .filter_by(digest_date=TARGET_DATE, section_name=section)
+            .first()
+        )
+        assert run is not None, f"No DigestRun for section={section}"
+        page = db.query(DigestPage).filter_by(digest_run_id=run.id).first()
+        assert page is not None, f"No DigestPage for section={section}"
+
+
+# ── admin API section_name validation ─────────────────────────────────────────
+
+def test_admin_assemble_defaults_to_companies_business(client, db):
+    """POST /admin/digests/assemble without section_name defaults to companies_business."""
+    resp = client.post(
+        "/admin/digests/assemble",
+        json={"digest_date": str(TARGET_DATE)},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["section_name"] == SECTION_NAME
+
+
+def test_admin_assemble_accepts_product_updates(client, db):
+    """POST /admin/digests/assemble accepts product_updates as section_name."""
+    resp = client.post(
+        "/admin/digests/assemble",
+        json={"digest_date": str(TARGET_DATE), "section_name": PRODUCT_UPDATES_SECTION},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["section_name"] == PRODUCT_UPDATES_SECTION
+
+
+def test_admin_assemble_accepts_incidents(client, db):
+    """POST /admin/digests/assemble accepts incidents as section_name."""
+    resp = client.post(
+        "/admin/digests/assemble",
+        json={"digest_date": str(TARGET_DATE), "section_name": INCIDENTS_SECTION},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["section_name"] == INCIDENTS_SECTION
+
+
+def test_admin_assemble_rejects_invalid_section_name(client, db):
+    """POST /admin/digests/assemble returns 422 for unknown section names."""
+    resp = client.post(
+        "/admin/digests/assemble",
+        json={"digest_date": str(TARGET_DATE), "section_name": "bogus_section"},
+    )
+    assert resp.status_code == 422

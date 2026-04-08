@@ -356,25 +356,31 @@ def ui_digests(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
 @router.post("/digests/assemble")
 def ui_assemble_digest(
     digest_date: str = Form(...),
+    section_name: str = Form(SECTION_NAME),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
+    if section_name not in ALL_SECTIONS:
+        return _redirect(
+            "/ui/digests", "err",
+            f"Invalid section '{section_name}'. Must be one of: {', '.join(sorted(ALL_SECTIONS))}",
+        )
     try:
         parsed_date = date_cls.fromisoformat(digest_date)
     except ValueError:
         return _redirect("/ui/digests", "err", f"Invalid date: {digest_date}")
     try:
         run, entries, created = assemble_digest(
-            db, digest_date=parsed_date, section_name=SECTION_NAME,
+            db, digest_date=parsed_date, section_name=section_name,
             max_entries=MAX_ENTRIES_DEFAULT,
         )
         msg = (
-            f"Assembled {parsed_date}: {run.total_included_clusters} entries "
+            f"Assembled {parsed_date} [{section_name}]: {run.total_included_clusters} entries "
             f"({'new' if created else 'rebuilt'})"
         )
-        logger.info("UI assemble date=%s included=%d", parsed_date, len(entries))
+        logger.info("UI assemble date=%s section=%s included=%d", parsed_date, section_name, len(entries))
         return _redirect("/ui/digests", "ok", msg)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("UI assemble failed date=%s", digest_date)
+        logger.exception("UI assemble failed date=%s section=%s", digest_date, section_name)
         return _redirect("/ui/digests", "err", f"Assemble failed: {exc}")
 
 
