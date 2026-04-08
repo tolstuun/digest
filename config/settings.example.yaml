@@ -52,3 +52,8 @@ digest:
   model_writing: "claude-haiku-4-5-20251001" # model for final digest-writing stage
   max_extract_facts_per_run: 75             # hard cap on extract_facts LLM calls per daily run
   max_assess_per_run: 75                    # hard cap on assess LLM calls per daily run
+  # Maximum entries per section in the assembled digest.
+  # 0 = unlimited (default). Positive integer = keep only top-N by final_score.
+  max_companies_business_entries: 0
+  max_product_updates_entries: 0
+  max_incidents_entries: 0

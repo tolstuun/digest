@@ -41,7 +41,7 @@ from app.config import Settings
 from app.digest.filters import cluster_passes_any_section_gate
 from app.digest.service import (
     INCIDENTS_SECTION,
-    MAX_ENTRIES_DEFAULT,
+    PRODUCT_UPDATES_SECTION,
     SECTION_NAME,
     assemble_digest,
 )
@@ -339,14 +339,21 @@ def _run_assess(
     }
 
 
-def _run_assemble_digest(db: Session, run_date: date) -> dict:
+def _run_assemble_digest(db: Session, run_date: date, cfg: Optional[Settings] = None) -> dict:
+    # Per-section entry limits from config; 0 means unlimited.
+    limits: dict[str, int] = {}
+    if cfg is not None:
+        limits[SECTION_NAME] = cfg.digest.max_companies_business_entries
+        limits[PRODUCT_UPDATES_SECTION] = cfg.digest.max_product_updates_entries
+        limits[INCIDENTS_SECTION] = cfg.digest.max_incidents_entries
+
     results = []
     for section in (SECTION_NAME, INCIDENTS_SECTION):
         run, entries, created = assemble_digest(
             db,
             digest_date=run_date,
             section_name=section,
-            max_entries=MAX_ENTRIES_DEFAULT,
+            max_entries=limits.get(section, 0),
         )
         results.append({
             "section": section,
@@ -522,7 +529,7 @@ def run_daily_pipeline(
         ("extract_facts",    lambda: _run_extract_facts(db, run_date, cfg.digest.max_extract_facts_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language, cfg=cfg)),
         ("cluster_event",    lambda: _run_cluster_event(db)),
         ("assess",           lambda: _run_assess(db, run_date, cfg.digest.max_assess_per_run, pipeline_run_id=run_id, output_language=cfg.digest.output_language, cfg=cfg)),
-        ("assemble_digest",  lambda: _run_assemble_digest(db, run_date)),
+        ("assemble_digest",  lambda: _run_assemble_digest(db, run_date, cfg=cfg)),
         ("write_digest",     lambda: _run_write_digest(db, run_date, cfg, pipeline_run_id=run_id)),
         ("render_digest",    lambda: _run_render_digest(db, run_date)),
         ("publish_telegram", lambda: (
