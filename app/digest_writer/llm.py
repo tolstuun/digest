@@ -22,16 +22,25 @@ _TOOL_SCHEMA = {
     "name": _TOOL_NAME,
     "description": (
         "Write polished digest copy for one news entry. "
-        "Output must be in the requested language. "
+        "All three output fields must be in the requested language. "
+        "Write final_title as a concise, factual headline (one line, no trailing period). "
         "Write final_summary as 2-3 clear, factual sentences: state what happened, "
         "name the company, include deal size or key detail if available, and add brief context. "
         "Write final_why_it_matters as 2-3 sentences: explain the business or security significance "
         "concretely — what this means for the market, buyers, or competitors. "
-        "Keep both fields tight and businesslike; avoid marketing language."
+        "Keep all fields tight and businesslike; avoid marketing language."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
+            "final_title": {
+                "type": "string",
+                "description": (
+                    "Concise factual headline in the requested language. "
+                    "One line, no trailing period. "
+                    "Translate or rewrite the original title if it is not in the requested language."
+                ),
+            },
             "final_summary": {
                 "type": "string",
                 "description": (
@@ -49,7 +58,7 @@ _TOOL_SCHEMA = {
                 ),
             },
         },
-        "required": ["final_summary", "final_why_it_matters"],
+        "required": ["final_title", "final_summary", "final_why_it_matters"],
     },
 }
 

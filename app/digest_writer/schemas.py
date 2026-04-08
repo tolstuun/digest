@@ -22,5 +22,6 @@ class DigestEntryInput(BaseModel):
 
 class DigestEntryOutput(BaseModel):
     """Output from the digest-writing LLM call."""
+    final_title: str
     final_summary: str
     final_why_it_matters: str

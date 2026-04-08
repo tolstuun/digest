@@ -77,8 +77,15 @@ def _mock_usage() -> LlmUsageInfo:
     return LlmUsageInfo(model_name="claude-haiku-4-5-20251001", input_tokens=100, output_tokens=50)
 
 
-def _mock_write_result() -> DigestEntryOutput:
+def _mock_write_result(lang: str = "en") -> DigestEntryOutput:
+    if lang == "ru":
+        return DigestEntryOutput(
+            final_title="Acme Corp привлекла $50 млн в раунде Series B",
+            final_summary="Acme Corp привлекла $50 млн в раунде Series B.",
+            final_why_it_matters="Это значимая инвестиция в сектор кибербезопасности.",
+        )
     return DigestEntryOutput(
+        final_title="Acme Corp Raises $50M in Series B Funding",
         final_summary="Acme Corp secured $50M in Series B funding.",
         final_why_it_matters="This is a notable investment in the cybersecurity sector.",
     )
@@ -97,6 +104,7 @@ def test_write_updates_entry_final_fields(db):
         result = write_digest_entries(db, run, _make_settings())
 
     db.refresh(entry)
+    assert entry.final_title == "Acme Corp Raises $50M in Series B Funding"
     assert entry.final_summary == "Acme Corp secured $50M in Series B funding."
     assert entry.final_why_it_matters == "This is a notable investment in the cybersecurity sector."
     assert result["written"] == 1
@@ -402,3 +410,67 @@ def test_write_digest_backoff_increases_between_retries(db):
     # Should sleep _OVERLOAD_MAX_RETRIES - 1 times (no sleep before last attempt)
     assert len(sleep_calls) == _OVERLOAD_MAX_RETRIES - 1
     assert sleep_calls == _OVERLOAD_BACKOFF_SECONDS[:len(sleep_calls)]
+
+
+# ── final_title tests (Part A: titles in output_language) ────────────────────
+
+def test_final_title_written_for_english_output(db):
+    """write_digest_entries persists final_title from LLM output (English)."""
+    run = _make_run(db)
+    entry = _make_entry(db, run)
+
+    with patch(
+        "app.digest_writer.service.write_digest_entry_llm",
+        return_value=(_mock_write_result("en"), _mock_usage()),
+    ):
+        write_digest_entries(db, run, _make_settings("en"))
+
+    db.refresh(entry)
+    assert entry.final_title == "Acme Corp Raises $50M in Series B Funding"
+    assert entry.final_title == entry.final_title  # sanity — not None
+
+
+def test_final_title_written_for_russian_output(db):
+    """write_digest_entries persists final_title from LLM output (Russian)."""
+    run = _make_run(db)
+    entry = _make_entry(db, run)
+
+    with patch(
+        "app.digest_writer.service.write_digest_entry_llm",
+        return_value=(_mock_write_result("ru"), _mock_usage()),
+    ):
+        write_digest_entries(db, run, _make_settings("ru"))
+
+    db.refresh(entry)
+    assert entry.final_title == "Acme Corp привлекла $50 млн в раунде Series B"
+
+
+def test_render_uses_final_title_when_set():
+    """HTML renderer uses final_title when set, not the raw original title."""
+    from app.rendering.html import _render_entry
+
+    entry = DigestEntry(
+        rank=1,
+        title="原始中文标题",           # Chinese original title
+        final_title="English Translated Title",
+        final_summary="Summary text.",
+        final_why_it_matters="Why it matters.",
+    )
+    html = _render_entry(entry, "en")
+    assert "English Translated Title" in html
+    assert "原始中文标题" not in html
+
+
+def test_render_falls_back_to_title_when_final_title_absent():
+    """HTML renderer falls back to title when final_title is not set (old rows)."""
+    from app.rendering.html import _render_entry
+
+    entry = DigestEntry(
+        rank=1,
+        title="Original Title Without Translation",
+        final_title=None,
+        final_summary="Summary text.",
+        final_why_it_matters="Why it matters.",
+    )
+    html = _render_entry(entry, "en")
+    assert "Original Title Without Translation" in html

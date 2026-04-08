@@ -88,10 +88,13 @@ def _render_entry(entry: DigestEntry, output_language: str) -> str:
     else:
         source_block = ""
 
+    # Title: prefer final_title (in output_language) if written; fall back to original title
+    display_title = entry.final_title if entry.final_title else entry.title
+
     return (
         f'<div class="entry">\n'
         f'  <div class="rank">#{entry.rank}</div>\n'
-        f'  <div class="entry-title">{_e(entry.title)}</div>\n'
+        f'  <div class="entry-title">{_e(display_title)}</div>\n'
         f'  <div class="score">Score: {score}</div>\n'
         f'  <div class="summary">\n'
         f"    {summary_html}\n"
