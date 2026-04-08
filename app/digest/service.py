@@ -9,7 +9,7 @@ Candidate selection rules:
       Primary: representative story's published_at.date() if available.
       Fallback: event_cluster.created_at.date().
   - Sort included candidates by final_score descending.
-  - Limit to max_entries (default: 20).
+  - Limit to max_entries (0 = unlimited; positive N = top-N by final_score).
 
 Editorial feedback overrides (applied BEFORE include_in_digest check):
   include          → always include, bypass all filters
@@ -57,8 +57,9 @@ INCIDENTS_SECTION = "incidents"
 # All known section names — used for validation in UI and feedback routing.
 ALL_SECTIONS: tuple[str, ...] = (SECTION_NAME, PRODUCT_UPDATES_SECTION, INCIDENTS_SECTION)
 
-# Maximum entries per digest run. Explicit in code; can be overridden per call.
-MAX_ENTRIES_DEFAULT = 20
+# Default max entries used when no config limit is set.
+# 0 means unlimited; positive N keeps only the top-N entries by final_score.
+MAX_ENTRIES_DEFAULT = 0
 
 # Type alias for readability
 _CandidateTuple = tuple[
@@ -245,7 +246,9 @@ def assemble_digest(
 
     included = [t for t in all_candidates if _passes_relevance(t)]
     included.sort(key=lambda t: t[0].final_score or 0.0, reverse=True)
-    included = included[:max_entries]
+    if max_entries > 0:
+        included = included[:max_entries]
+    # max_entries == 0 means unlimited — no slice applied
 
     # Create DigestRun
     now = datetime.now(timezone.utc)

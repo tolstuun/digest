@@ -90,6 +90,11 @@ class DigestConfig:
     # If the cap is hit the step stops and records capped=True in its details.
     max_extract_facts_per_run: int = 75
     max_assess_per_run: int = 75
+    # Maximum entries per section in the assembled digest.
+    # 0 means unlimited; any positive integer keeps only the top-N by final_score.
+    max_companies_business_entries: int = 0
+    max_product_updates_entries: int = 0
+    max_incidents_entries: int = 0
 
 
 # ── top-level settings ────────────────────────────────────────────────────────
@@ -225,6 +230,12 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             s.digest.max_extract_facts_per_run = int(dg_data["max_extract_facts_per_run"])
         if "max_assess_per_run" in dg_data:
             s.digest.max_assess_per_run = int(dg_data["max_assess_per_run"])
+        if "max_companies_business_entries" in dg_data:
+            s.digest.max_companies_business_entries = int(dg_data["max_companies_business_entries"])
+        if "max_product_updates_entries" in dg_data:
+            s.digest.max_product_updates_entries = int(dg_data["max_product_updates_entries"])
+        if "max_incidents_entries" in dg_data:
+            s.digest.max_incidents_entries = int(dg_data["max_incidents_entries"])
 
     return s
 

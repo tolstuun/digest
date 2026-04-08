@@ -516,3 +516,50 @@ def test_admin_assemble_no_candidates_returns_empty(client, db):
     data = resp.json()
     assert data["total_candidates"] == 0
     assert data["total_included"] == 0
+
+
+# ── section entry limits: 0 = unlimited, N = top-N ───────────────────────────
+
+def test_max_entries_zero_means_unlimited(db):
+    """max_entries=0 includes all passing entries (unlimited)."""
+    for i in range(6):
+        _make_full_chain(
+            db, published_at=_dt(TARGET_DATE),
+            company_names=[f"UnlimCorp{i}"], suffix=f"unlim{i}",
+        )
+
+    run, entries, _ = assemble_digest(db, TARGET_DATE, max_entries=0)
+
+    assert len(entries) == 6
+    assert run.total_included_clusters == 6
+
+
+def test_max_entries_positive_keeps_top_n(db):
+    """max_entries=N keeps only the top-N entries by final_score."""
+    for i in range(5):
+        _make_full_chain(
+            db, published_at=_dt(TARGET_DATE),
+            company_names=[f"TopNCorp{i}"], suffix=f"topn{i}",
+            final_score=round(0.5 + i * 0.05, 2),
+        )
+
+    run, entries, _ = assemble_digest(db, TARGET_DATE, max_entries=3)
+
+    assert len(entries) == 3
+    assert run.total_included_clusters == 3
+    # Entries must be the top-3 by final_score (descending)
+    scores = [e.final_score for e in entries]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_max_entries_larger_than_available_includes_all(db):
+    """max_entries larger than the candidate count includes all entries."""
+    for i in range(2):
+        _make_full_chain(
+            db, published_at=_dt(TARGET_DATE),
+            company_names=[f"SmallCorp{i}"], suffix=f"small{i}",
+        )
+
+    run, entries, _ = assemble_digest(db, TARGET_DATE, max_entries=100)
+
+    assert len(entries) == 2

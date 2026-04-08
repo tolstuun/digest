@@ -270,3 +270,26 @@ def test_compose_config_is_parseable():
     assert isinstance(s, Settings)
     # Compose config must have the docker-compose db service hostname
     assert "db" in s.database.url
+
+
+def test_section_entry_limit_defaults_are_zero():
+    """Default section entry limits are 0 (unlimited)."""
+    s = load_settings(config_path="/nonexistent")
+    assert s.digest.max_companies_business_entries == 0
+    assert s.digest.max_product_updates_entries == 0
+    assert s.digest.max_incidents_entries == 0
+
+
+def test_section_entry_limits_loaded_from_yaml(tmp_path):
+    """Section entry limits are read from the YAML digest section."""
+    f = tmp_path / "settings.yaml"
+    f.write_text(
+        "digest:\n"
+        "  max_companies_business_entries: 5\n"
+        "  max_product_updates_entries: 3\n"
+        "  max_incidents_entries: 10\n"
+    )
+    s = load_settings(config_path=str(f))
+    assert s.digest.max_companies_business_entries == 5
+    assert s.digest.max_product_updates_entries == 3
+    assert s.digest.max_incidents_entries == 10
