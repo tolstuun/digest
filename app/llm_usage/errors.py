@@ -26,6 +26,14 @@ _BILLING_PHRASES = (
 )
 
 
+class BatchTimeoutError(Exception):
+    """
+    Raised when an Anthropic Message Batch does not complete within the
+    configured timeout. The pipeline step must be treated as a hard failure —
+    there is NO sync fallback.
+    """
+
+
 class AnthropicBillingError(RuntimeError):
     """
     Raised when an Anthropic API call fails due to billing or quota issues.

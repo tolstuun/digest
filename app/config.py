@@ -57,6 +57,8 @@ class LLMConfig:
     # When False (default), extract_facts runs synchronously per-story.
     # On timeout the step fails hard — there is NO sync fallback.
     use_batch_extract: bool = False
+    use_batch_assess: bool = False
+    # Shared poll/timeout config for both batch_extract and batch_assess.
     batch_poll_interval_seconds: int = 30
     batch_timeout_minutes: int = 90
 
@@ -186,6 +188,8 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             s.llm.model_scoring = llm_data["model_scoring"]
         if "use_batch_extract" in llm_data:
             s.llm.use_batch_extract = bool(llm_data["use_batch_extract"])
+        if "use_batch_assess" in llm_data:
+            s.llm.use_batch_assess = bool(llm_data["use_batch_assess"])
         if "batch_poll_interval_seconds" in llm_data:
             s.llm.batch_poll_interval_seconds = int(llm_data["batch_poll_interval_seconds"])
         if "batch_timeout_minutes" in llm_data:
