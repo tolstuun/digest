@@ -35,6 +35,7 @@ from app.digest.feedback import (
     is_suppressed,
 )
 from app.digest.filters import (
+    passes_regional_source_gate,
     should_include_in_companies_business,
     should_include_in_incidents,
     should_include_in_product_updates,
@@ -216,9 +217,24 @@ def assemble_digest(
             return False
 
         source_name: Optional[str] = None
+        source_language: Optional[str] = None
+        source_geography: Optional[str] = None
         if rep_story and rep_story.source_id:
             source = db.get(Source, rep_story.source_id)
-            source_name = source.name if source else None
+            if source:
+                source_name = source.name
+                source_language = source.language
+                source_geography = source.geography
+
+        # Regional source gate: non-English sources must be about their own region
+        if not passes_regional_source_gate(
+            source_language,
+            source_geography,
+            rep_story.title if rep_story else None,
+            rep_facts.canonical_summary_en if rep_facts else None,
+            rep_facts.company_names if rep_facts else None,
+        ):
+            return False
 
         if section_name == SECTION_NAME:
             return should_include_in_companies_business(

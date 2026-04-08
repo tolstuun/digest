@@ -168,6 +168,7 @@ def write_digest_entries(
             result, usage = _call_llm_with_overload_retry(
                 entry_input, model_name, api_key, entry.id
             )
+            entry.final_title = result.final_title
             entry.final_summary = result.final_summary
             entry.final_why_it_matters = result.final_why_it_matters
             db.commit()

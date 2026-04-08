@@ -654,3 +654,156 @@ def test_no_security_signal_excluded():
         company_names=["Acme Corp"],
         source_name="Forbes",
     ) is False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Regional source gate (passes_regional_source_gate)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from app.digest.filters import passes_regional_source_gate
+
+
+def test_regional_gate_allows_global_english_source():
+    """English sources are always allowed regardless of story content."""
+    result = passes_regional_source_gate(
+        source_language="en",
+        source_geography="uk,europe",
+        title="US company breached by ransomware",
+        summary_en="A US-based firm suffered a ransomware attack.",
+        company_names=["Acme Corp"],
+    )
+    assert result is True
+
+
+def test_regional_gate_allows_unknown_language_source():
+    """Sources with no language set are treated as global — gate does not apply."""
+    result = passes_regional_source_gate(
+        source_language=None,
+        source_geography=None,
+        title="US company raises $50M",
+        summary_en="Ordinary US funding news.",
+        company_names=["Acme Corp"],
+    )
+    assert result is True
+
+
+def test_regional_gate_allows_chinese_source_with_china_story():
+    """Chinese-language source covering a Chinese company passes."""
+    result = passes_regional_source_gate(
+        source_language="zh",
+        source_geography="china,apac",
+        title="Huawei announces new security platform",
+        summary_en="Huawei unveiled a new cybersecurity product in Beijing.",
+        company_names=["Huawei"],
+    )
+    assert result is True
+
+
+def test_regional_gate_allows_chinese_source_with_apac_story():
+    """Chinese-language source covering an APAC company passes."""
+    result = passes_regional_source_gate(
+        source_language="zh",
+        source_geography="china,apac",
+        title="Singapore startup raises $20M in Series A",
+        summary_en="A Singapore-based cybersecurity startup secured funding.",
+        company_names=["SecureSG"],
+    )
+    assert result is True
+
+
+def test_regional_gate_blocks_chinese_source_with_ordinary_us_story():
+    """Chinese-language source covering an ordinary US story is excluded."""
+    result = passes_regional_source_gate(
+        source_language="zh",
+        source_geography="china,apac",
+        title="Palo Alto Networks raises $200M",
+        summary_en="A California-based security vendor secured additional funding.",
+        company_names=["Palo Alto Networks"],
+    )
+    assert result is False
+
+
+def test_regional_gate_blocks_french_source_with_unrelated_story():
+    """French-language source covering an ordinary US/UK story is excluded."""
+    result = passes_regional_source_gate(
+        source_language="fr",
+        source_geography="france,europe",
+        title="CrowdStrike reports record revenue",
+        summary_en="The US cybersecurity firm posted strong quarterly results.",
+        company_names=["CrowdStrike"],
+    )
+    assert result is False
+
+
+def test_regional_gate_allows_french_source_with_france_story():
+    """French-language source covering a French company passes."""
+    result = passes_regional_source_gate(
+        source_language="fr",
+        source_geography="france,europe",
+        title="Thales acquires cybersecurity firm",
+        summary_en="French defense group Thales announced an acquisition in Paris.",
+        company_names=["Thales"],
+    )
+    assert result is True
+
+
+def test_regional_gate_allows_french_source_with_eu_story():
+    """French-language source covering an EU regulatory story passes."""
+    result = passes_regional_source_gate(
+        source_language="fr",
+        source_geography="france,europe",
+        title="EU GDPR fine issued against data broker",
+        summary_en="The European regulator imposed a fine under GDPR.",
+        company_names=["DataBroker SA"],
+    )
+    assert result is True
+
+
+def test_regional_gate_allows_major_global_story_for_regional_source():
+    """Regional source covering a major global law enforcement operation passes."""
+    result = passes_regional_source_gate(
+        source_language="zh",
+        source_geography="china,apac",
+        title="FBI indicted ransomware gang members",
+        summary_en="The FBI arrested and indicted members of a ransomware gang in a coordinated takedown.",
+        company_names=[],
+    )
+    assert result is True
+
+
+def test_regional_gate_does_not_trigger_on_ordinary_major_foreign_story():
+    """Ordinary important-sounding US story does NOT pass the major global escape hatch."""
+    result = passes_regional_source_gate(
+        source_language="zh",
+        source_geography="china,apac",
+        title="SentinelOne raises $100M in major funding round",
+        summary_en="The US cybersecurity company raised significant capital to expand globally.",
+        company_names=["SentinelOne"],
+    )
+    assert result is False
+
+
+def test_regional_gate_unknown_region_defaults_to_pass():
+    """Non-English source with unknown geography defaults to True (no blind filtering)."""
+    result = passes_regional_source_gate(
+        source_language="sw",  # Swahili — not in keyword map
+        source_geography="east_africa",  # also not in map
+        title="US company raises $50M",
+        summary_en="A US-based firm secured funding.",
+        company_names=["Acme Corp"],
+    )
+    assert result is True
+
+
+def test_regional_gate_geography_token_normalization():
+    """Geography tokens are split and normalized; each is looked up independently."""
+    # "japan,apac" → both "japan" and "apac" tokens are checked
+    # A story about Australia passes via the "apac" token
+    result = passes_regional_source_gate(
+        source_language="ja",
+        source_geography="japan,apac",
+        title="Australian firm suffers breach",
+        summary_en="An Australian cybersecurity company reported a data breach.",
+        company_names=["AusCyber"],
+    )
+    assert result is True

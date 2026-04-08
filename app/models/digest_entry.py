@@ -48,6 +48,7 @@ class DigestEntry(Base):
     source_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
     # Final polished copy written by the digest-writer LLM stage
+    final_title: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
     final_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     final_why_it_matters: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
