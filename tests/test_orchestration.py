@@ -881,3 +881,113 @@ def test_admin_assemble_rejects_invalid_section_name(client, db):
         json={"digest_date": str(TARGET_DATE), "section_name": "bogus_section"},
     )
     assert resp.status_code == 422
+
+
+# ── write_digest overload partial-state tests ─────────────────────────────────
+
+from app.llm_usage.errors import AnthropicOverloadedError, WriteDigestPartialOverloadError
+
+
+def _run_pipeline_with_write_overload(db, *, written_before_fail=0):
+    """
+    Run the full pipeline where write_digest raises WriteDigestPartialOverloadError.
+    write_digest_entries is mocked at the orchestration import boundary so the test
+    does not need real source data — the exception fires regardless of entry count.
+    Returns the pipeline summary.
+    """
+    cfg = _make_settings()
+    exc = WriteDigestPartialOverloadError(
+        "overloaded mid-run",
+        original=Exception("529"),
+        written=written_before_fail,
+        skipped=0,
+        errors=0,
+        remaining_unwritten=2 - written_before_fail,
+    )
+    with (
+        patch("app.orchestration.service.ingest_source", side_effect=_mock_ingest_returns_empty),
+        patch("app.extraction.service.extract_facts_llm", return_value=(MagicMock(
+            event_type="funding", company_names=["Acme"], person_names=[],
+            product_names=[], geography_names=[], amount_text=None, currency=None,
+            source_language="en", canonical_summary_en="x", canonical_summary_ru="x",
+            extraction_confidence=0.9,
+        ), _mock_usage())),
+        patch("app.scoring.llm.assess_cluster_llm", return_value=(MagicMock(
+            primary_section="companies_business", llm_score=0.8,
+            include_in_digest=True, why_it_matters_en="x", why_it_matters_ru="x",
+            editorial_notes=None,
+        ), _mock_usage())),
+        # Mock at the service boundary so exception fires regardless of entry count
+        patch("app.orchestration.service.write_digest_entries", side_effect=exc),
+        patch("app.publishing.service.send_telegram_message", return_value="42"),
+    ):
+        return run_daily_pipeline(
+            db=db, run_date=TARGET_DATE, trigger_type="manual",
+            publish_telegram=False, cfg=cfg,
+        )
+
+
+def test_write_digest_partial_overload_marks_run_failed(db):
+    """Pipeline run is marked failed when write_digest raises WriteDigestPartialOverloadError."""
+    summary = _run_pipeline_with_write_overload(db)
+    assert summary["status"] == "failed"
+    assert summary["failed_step"] == "write_digest"
+
+
+def test_write_digest_partial_overload_step_details_contain_partial_state(db):
+    """write_digest step details include provider_overloaded, retryable, and partial counts."""
+    summary = _run_pipeline_with_write_overload(db, written_before_fail=1)
+    details = summary["step_results"]["write_digest"]
+
+    assert details.get("provider_overloaded") is True
+    assert details.get("retryable") is True
+    assert details.get("partial_written") == 1
+    assert "remaining_unwritten" in details
+    assert "written" in details
+    assert "skipped" in details
+    assert "errors" in details
+
+
+def test_write_digest_partial_overload_does_not_send_billing_alert(db):
+    """WriteDigestPartialOverloadError does not trigger a Telegram billing alert."""
+    cfg = _make_settings(telegram_enabled=True)
+
+    overload_exc = WriteDigestPartialOverloadError(
+        "overloaded", original=Exception("529"),
+        written=0, skipped=0, errors=0, remaining_unwritten=1,
+    )
+
+    with (
+        patch("app.orchestration.service.ingest_source", side_effect=_mock_ingest_returns_empty),
+        patch("app.extraction.service.extract_facts_llm", return_value=(MagicMock(
+            event_type="funding", company_names=["Acme"], person_names=[],
+            product_names=[], geography_names=[], amount_text=None, currency=None,
+            source_language="en", canonical_summary_en="x", canonical_summary_ru="x",
+            extraction_confidence=0.9,
+        ), _mock_usage())),
+        patch("app.scoring.llm.assess_cluster_llm", return_value=(MagicMock(
+            primary_section="companies_business", llm_score=0.8,
+            include_in_digest=True, why_it_matters_en="x", why_it_matters_ru="x",
+            editorial_notes=None,
+        ), _mock_usage())),
+        patch("app.orchestration.service.write_digest_entries", side_effect=overload_exc),
+        patch("app.publishing.telegram.send_operational_alert") as mock_alert,
+        patch("app.publishing.service.send_telegram_message", return_value="42"),
+    ):
+        summary = run_daily_pipeline(
+            db=db, run_date=TARGET_DATE, trigger_type="manual",
+            publish_telegram=False, cfg=cfg,
+        )
+
+    mock_alert.assert_not_called()
+    assert summary["status"] == "failed"
+
+
+def test_write_digest_partial_overload_stops_pipeline_before_render(db):
+    """render_digest and publish_telegram steps are not executed after write_digest fails."""
+    summary = _run_pipeline_with_write_overload(db)
+    step_results = summary["step_results"]
+
+    assert "write_digest" in step_results
+    assert "render_digest" not in step_results
+    assert "publish_telegram" not in step_results

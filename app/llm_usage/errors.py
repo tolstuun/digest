@@ -1,7 +1,7 @@
 """
 Anthropic provider error classification.
 
-Two distinct hard-failure classes:
+Three distinct hard-failure classes:
 
 AnthropicBillingError — true billing/quota/account-balance failures.
   Raised when the API rejects a request due to insufficient credits, quota
@@ -13,7 +13,14 @@ AnthropicOverloadedError — transient provider overload (HTTP 529 overloaded_er
   write_digest retries with backoff; if still overloaded the pipeline step fails
   clearly as a provider outage, with NO billing/quota alert sent.
 
-Both must fail the pipeline run — do not swallow them.
+WriteDigestPartialOverloadError(AnthropicOverloadedError) — raised by
+  write_digest_entries when the overload retry budget is exhausted mid-run.
+  Carries partial-state fields (written, skipped, errors, remaining_unwritten)
+  so the orchestration layer can surface retryable/partial details in the
+  step result while still marking the step and run as failed.
+  Already-written entries are committed and safe; a later retry resumes cleanly.
+
+All three must fail the pipeline run — do not swallow them.
 """
 from __future__ import annotations
 
@@ -56,6 +63,40 @@ class AnthropicOverloadedError(RuntimeError):
     def __init__(self, message: str, original: Exception) -> None:
         super().__init__(message)
         self.__cause__ = original
+
+
+class WriteDigestPartialOverloadError(AnthropicOverloadedError):
+    """
+    Raised by write_digest_entries when the per-entry overload retry budget is
+    exhausted mid-run.
+
+    Already-written entries are committed and will be skipped on the next retry
+    (write_digest_entries is idempotent: it skips entries with final_summary set).
+    This exception carries enough state for the orchestration layer to produce
+    rich, actionable step details without marking the run as silently successful.
+
+    Fields:
+      written            — entries successfully written before abort
+      skipped            — entries skipped (already had final_summary, or gate failed)
+      errors             — entries that failed with a non-overload error
+      remaining_unwritten — entries not yet attempted after the aborting entry
+    """
+
+    def __init__(
+        self,
+        message: str,
+        original: Exception,
+        *,
+        written: int,
+        skipped: int,
+        errors: int,
+        remaining_unwritten: int,
+    ) -> None:
+        super().__init__(message, original=original)
+        self.written = written
+        self.skipped = skipped
+        self.errors = errors
+        self.remaining_unwritten = remaining_unwritten
 
 
 class AnthropicBillingError(RuntimeError):

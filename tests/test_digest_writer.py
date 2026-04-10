@@ -348,9 +348,9 @@ def test_write_digest_retries_on_overloaded_then_succeeds(db):
     mock_sleep.assert_called_once()     # backoff applied
 
 
-def test_write_digest_fails_step_after_max_retries(db):
-    """write_digest raises AnthropicOverloadedError after exhausting all retries."""
-    from app.llm_usage.errors import AnthropicOverloadedError
+def test_write_digest_raises_partial_overload_after_max_retries(db):
+    """write_digest raises WriteDigestPartialOverloadError after exhausting all retries."""
+    from app.llm_usage.errors import AnthropicOverloadedError, WriteDigestPartialOverloadError
     from app.digest_writer.service import _OVERLOAD_MAX_RETRIES
     run = _make_run(db)
     _make_entry(db, run)
@@ -362,15 +362,70 @@ def test_write_digest_fails_step_after_max_retries(db):
         side_effect=overloaded,
     ) as mock_llm, \
          patch("app.digest_writer.service.time.sleep"):
-        with pytest.raises(AnthropicOverloadedError):
+        with pytest.raises(WriteDigestPartialOverloadError):
             write_digest_entries(db, run, _make_settings())
 
+    # WriteDigestPartialOverloadError IS-A AnthropicOverloadedError
     assert mock_llm.call_count == _OVERLOAD_MAX_RETRIES
 
 
-def test_write_digest_overloaded_does_not_write_partial_entry(db):
-    """No partial entry is written when AnthropicOverloadedError is raised after retries."""
-    from app.llm_usage.errors import AnthropicOverloadedError
+def test_write_digest_retry_budget_is_seven_attempts(db):
+    """write_digest makes exactly 7 total attempts before giving up."""
+    from app.llm_usage.errors import AnthropicOverloadedError, WriteDigestPartialOverloadError
+    from app.digest_writer.service import _OVERLOAD_MAX_RETRIES
+
+    assert _OVERLOAD_MAX_RETRIES == 7, "Expected 7 total attempts for async digest path"
+
+    run = _make_run(db)
+    _make_entry(db, run)
+    overloaded = AnthropicOverloadedError("overloaded", original=Exception("Overloaded"))
+
+    with patch(
+        "app.digest_writer.service.write_digest_entry_llm",
+        side_effect=overloaded,
+    ) as mock_llm, \
+         patch("app.digest_writer.service.time.sleep"):
+        with pytest.raises(WriteDigestPartialOverloadError):
+            write_digest_entries(db, run, _make_settings())
+
+    assert mock_llm.call_count == 7
+
+
+def test_write_digest_partial_overload_carries_state(db):
+    """WriteDigestPartialOverloadError carries accurate partial-state fields."""
+    from app.llm_usage.errors import AnthropicOverloadedError, WriteDigestPartialOverloadError
+
+    run = _make_run(db)
+    entry1 = _make_entry(db, run, rank=1)
+    entry2 = _make_entry(db, run, rank=2)
+
+    overloaded = AnthropicOverloadedError("overloaded", original=Exception("Overloaded"))
+    success = (_mock_write_result(), _mock_usage())
+
+    # entry1 succeeds, entry2 permanently overloaded across all retry attempts
+    from app.digest_writer.service import _OVERLOAD_MAX_RETRIES
+    with patch(
+        "app.digest_writer.service.write_digest_entry_llm",
+        side_effect=[success] + [overloaded] * _OVERLOAD_MAX_RETRIES,
+    ), patch("app.digest_writer.service.time.sleep"):
+        with pytest.raises(WriteDigestPartialOverloadError) as exc_info:
+            write_digest_entries(db, run, _make_settings())
+
+    exc = exc_info.value
+    assert exc.written == 1               # entry1 committed
+    assert exc.remaining_unwritten == 0   # entry2 was last; nothing after it
+    assert exc.skipped == 0
+    assert exc.errors == 0
+
+    db.refresh(entry1)
+    db.refresh(entry2)
+    assert entry1.final_summary is not None   # committed
+    assert entry2.final_summary is None       # rolled back
+
+
+def test_write_digest_overloaded_does_not_write_current_entry(db):
+    """The entry that triggered the overload abort is not partially written."""
+    from app.llm_usage.errors import AnthropicOverloadedError, WriteDigestPartialOverloadError
     run = _make_run(db)
     entry = _make_entry(db, run)
 
@@ -380,36 +435,71 @@ def test_write_digest_overloaded_does_not_write_partial_entry(db):
         "app.digest_writer.service.write_digest_entry_llm",
         side_effect=overloaded,
     ), patch("app.digest_writer.service.time.sleep"):
-        with pytest.raises(AnthropicOverloadedError):
+        with pytest.raises(WriteDigestPartialOverloadError):
             write_digest_entries(db, run, _make_settings())
 
     db.refresh(entry)
-    assert entry.final_summary is None      # no partial write
+    assert entry.final_summary is None      # rolled back cleanly
 
 
-def test_write_digest_backoff_increases_between_retries(db):
-    """Sleep duration increases between retry attempts (non-zero, increasing backoff)."""
-    from app.llm_usage.errors import AnthropicOverloadedError
-    from app.digest_writer.service import _OVERLOAD_BACKOFF_SECONDS, _OVERLOAD_MAX_RETRIES
+def test_write_digest_resume_skips_already_written_entries(db):
+    """A retry after partial overload skips committed entries and only writes missing ones."""
+    from app.llm_usage.errors import AnthropicOverloadedError, WriteDigestPartialOverloadError
+
     run = _make_run(db)
-    _make_entry(db, run)
+    entry1 = _make_entry(db, run, rank=1)
+    entry2 = _make_entry(db, run, rank=2)
 
     overloaded = AnthropicOverloadedError("overloaded", original=Exception("Overloaded"))
-    sleep_calls = []
+    success = (_mock_write_result(), _mock_usage())
 
-    def record_sleep(secs):
-        sleep_calls.append(secs)
+    # First call: entry1 succeeds, entry2 permanently overloaded across all retry attempts
+    from app.digest_writer.service import _OVERLOAD_MAX_RETRIES
+    with patch(
+        "app.digest_writer.service.write_digest_entry_llm",
+        side_effect=[success] + [overloaded] * _OVERLOAD_MAX_RETRIES,
+    ), patch("app.digest_writer.service.time.sleep"):
+        with pytest.raises(WriteDigestPartialOverloadError):
+            write_digest_entries(db, run, _make_settings())
+
+    db.refresh(entry1)
+    db.refresh(entry2)
+    assert entry1.final_summary is not None
+    assert entry2.final_summary is None
+
+    # Second call: entry1 skipped (already written), entry2 written
+    with patch(
+        "app.digest_writer.service.write_digest_entry_llm",
+        return_value=success,
+    ) as mock_llm, \
+         patch("app.digest_writer.service.time.sleep"):
+        result = write_digest_entries(db, run, _make_settings())
+
+    assert result["written"] == 1     # only entry2
+    assert result["skipped"] == 1     # entry1 skipped
+    assert mock_llm.call_count == 1   # LLM called only for entry2
+
+
+def test_write_digest_backoff_sequence_matches_spec(db):
+    """Backoff sequence is exactly [5, 15, 30, 60, 120, 240] and all sleeps are applied."""
+    from app.llm_usage.errors import AnthropicOverloadedError, WriteDigestPartialOverloadError
+    from app.digest_writer.service import _OVERLOAD_BACKOFF_SECONDS
+
+    assert _OVERLOAD_BACKOFF_SECONDS == [5, 15, 30, 60, 120, 240]
+
+    run = _make_run(db)
+    _make_entry(db, run)
+    overloaded = AnthropicOverloadedError("overloaded", original=Exception("Overloaded"))
+    sleep_calls = []
 
     with patch(
         "app.digest_writer.service.write_digest_entry_llm",
         side_effect=overloaded,
-    ), patch("app.digest_writer.service.time.sleep", side_effect=record_sleep):
-        with pytest.raises(AnthropicOverloadedError):
+    ), patch("app.digest_writer.service.time.sleep", side_effect=sleep_calls.append):
+        with pytest.raises(WriteDigestPartialOverloadError):
             write_digest_entries(db, run, _make_settings())
 
-    # Should sleep _OVERLOAD_MAX_RETRIES - 1 times (no sleep before last attempt)
-    assert len(sleep_calls) == _OVERLOAD_MAX_RETRIES - 1
-    assert sleep_calls == _OVERLOAD_BACKOFF_SECONDS[:len(sleep_calls)]
+    assert sleep_calls == _OVERLOAD_BACKOFF_SECONDS  # all 6 waits applied
 
 
 # ── final_title tests (Part A: titles in output_language) ────────────────────

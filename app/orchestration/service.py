@@ -49,7 +49,7 @@ from app.digest.service import (
 from app.digest_writer.service import write_digest_entries
 from app.extraction.service import extract_story_facts, extract_story_facts_batch_run
 from app.ingestion.service import ingest_source
-from app.llm_usage.errors import AnthropicBillingError, AnthropicOverloadedError
+from app.llm_usage.errors import AnthropicBillingError, AnthropicOverloadedError, WriteDigestPartialOverloadError
 from app.models.digest_run import DigestRun
 from app.models.event_cluster import EventCluster
 from app.models.event_cluster_assessment import EventClusterAssessment
@@ -576,7 +576,19 @@ def run_daily_pipeline(
                 "pipeline_run=%s step=%s PROVIDER OVERLOADED: %s", run.id, step_name, error_msg
             )
             _finish_step(db, step, status="failed", error=error_msg)
-            step_results[step_name] = {"error": error_msg, "provider_overloaded": True}
+            overload_details: dict = {"error": error_msg, "provider_overloaded": True}
+            if isinstance(exc, WriteDigestPartialOverloadError):
+                # Mid-run abort: already-written entries are safe; surface partial state
+                # so operators know the run is retryable and how many entries remain.
+                overload_details.update({
+                    "retryable": True,
+                    "partial_written": exc.written,
+                    "remaining_unwritten": exc.remaining_unwritten,
+                    "written": exc.written,
+                    "skipped": exc.skipped,
+                    "errors": exc.errors,
+                })
+            step_results[step_name] = overload_details
             failed_step = step_name
             _finish_run(db, run, status="failed", error=error_msg)
             break
