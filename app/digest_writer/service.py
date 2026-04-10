@@ -3,14 +3,19 @@ Digest-writing service.
 
 write_digest_entries() iterates over all DigestEntry rows for a DigestRun,
 calls the LLM to produce final polished copy in the configured language,
-and updates each entry with final_summary and final_why_it_matters.
+and updates each entry with final_title, final_summary, and final_why_it_matters.
 
 Idempotent: entries that already have final_summary set are skipped unless force=True.
+This makes the function resume-safe: a retry after a partial run only writes
+the entries that are still missing final_summary.
 
 Retry policy for transient provider overload (AnthropicOverloadedError):
   Up to _OVERLOAD_MAX_RETRIES attempts per entry, with increasing backoff.
-  If still overloaded after all attempts, AnthropicOverloadedError is re-raised
-  so the pipeline step and run fail explicitly — no silent partial output.
+  If still overloaded after all attempts, WriteDigestPartialOverloadError is raised.
+  This is a subclass of AnthropicOverloadedError and is caught by the orchestration
+  overload handler, which marks the step and run as failed with explicit partial-state
+  details (provider_overloaded, retryable, partial_written, remaining_unwritten).
+  Already-written entries are committed and safe; a later retry resumes cleanly.
 """
 import logging
 import time
@@ -24,7 +29,7 @@ from app.digest.filters import should_include_in_companies_business
 from app.digest.service import SECTION_NAME
 from app.digest_writer.llm import write_digest_entry_llm
 from app.digest_writer.schemas import DigestEntryInput, DigestEntryOutput
-from app.llm_usage.errors import AnthropicBillingError, AnthropicOverloadedError
+from app.llm_usage.errors import AnthropicBillingError, AnthropicOverloadedError, WriteDigestPartialOverloadError
 from app.llm_usage.schemas import LlmUsageInfo
 from app.llm_usage.service import record_usage
 from app.models.digest_entry import DigestEntry
@@ -39,8 +44,10 @@ _STAGE = "write_digest"
 
 # Retry config for transient provider overload only.
 # Backoff is per-attempt: wait _OVERLOAD_BACKOFF_SECONDS[attempt] before the next try.
-_OVERLOAD_MAX_RETRIES = 3
-_OVERLOAD_BACKOFF_SECONDS = [5, 15, 30]
+# The digest writer is async and can tolerate longer waits than interactive paths.
+# Total attempts = len(_OVERLOAD_BACKOFF_SECONDS) + 1 (one final attempt after last sleep).
+_OVERLOAD_BACKOFF_SECONDS = [5, 15, 30, 60, 120, 240]
+_OVERLOAD_MAX_RETRIES = len(_OVERLOAD_BACKOFF_SECONDS) + 1  # 7 attempts total
 
 
 def _call_llm_with_overload_retry(
@@ -106,7 +113,7 @@ def write_digest_entries(
     model_name = cfg.digest.model_writing
     api_key = cfg.llm.api_key
 
-    for entry in entries:
+    for i, entry in enumerate(entries):
         if entry.final_summary and not force:
             skipped += 1
             continue
@@ -181,11 +188,22 @@ def write_digest_entries(
         except AnthropicBillingError:
             db.rollback()
             raise
-        except AnthropicOverloadedError:
-            # Still overloaded after all retries — fail the step explicitly.
-            # No silent partial output: the caller must treat this as a hard failure.
+        except AnthropicOverloadedError as exc:
+            # Retry budget exhausted — roll back the current (uncommitted) entry
+            # and raise with full partial state so the orchestration layer can
+            # surface retryable/partial details while still marking the step failed.
+            # Already-committed entries are safe; a later retry resumes cleanly.
             db.rollback()
-            raise
+            remaining_unwritten = len(entries) - (i + 1)
+            raise WriteDigestPartialOverloadError(
+                f"Provider overloaded after {_OVERLOAD_MAX_RETRIES} attempts; "
+                f"{written} written, {remaining_unwritten} remaining",
+                original=exc,
+                written=written,
+                skipped=skipped,
+                errors=errors,
+                remaining_unwritten=remaining_unwritten,
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("write_digest entry=%s failed: %s", entry.id, exc)
